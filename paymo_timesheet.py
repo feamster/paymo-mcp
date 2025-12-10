@@ -1323,18 +1323,41 @@ if MCP_AVAILABLE:
             entries = [e for e in entries if e.get('billed') == billed]
 
         # Enhance entries with task names and readable data
+        # Use cache to avoid repeated API calls for same task_id
+        task_cache = {}
         result = []
         for entry in entries:
-            # Get task name
+            # Get task name (with caching)
             task_id = entry.get('task_id')
             task_name = ''
             if task_id:
-                try:
-                    task_response = client._request('GET', f'tasks/{task_id}')
-                    task_data = task_response.get('tasks', [{}])[0]
-                    task_name = task_data.get('name', '')
-                except:
-                    task_name = f'Task {task_id}'
+                # Check cache first
+                if task_id in task_cache:
+                    task_name = task_cache[task_id]
+                else:
+                    # Fetch from API and cache result
+                    try:
+                        import time
+                        time.sleep(0.5)  # Small delay to avoid rate limits
+                        task_response = client._request('GET', f'tasks/{task_id}')
+                        task_data = task_response.get('tasks', [{}])[0]
+                        task_name = task_data.get('name', '')
+                        task_cache[task_id] = task_name
+                    except Exception as e:
+                        # If rate limited, retry once after delay
+                        if '429' in str(e):
+                            try:
+                                time.sleep(2)
+                                task_response = client._request('GET', f'tasks/{task_id}')
+                                task_data = task_response.get('tasks', [{}])[0]
+                                task_name = task_data.get('name', '')
+                                task_cache[task_id] = task_name
+                            except Exception as retry_err:
+                                task_name = f'Task {task_id}'
+                                task_cache[task_id] = task_name
+                        else:
+                            task_name = f'Task {task_id}'
+                            task_cache[task_id] = task_name
 
             # Calculate duration in hours
             duration_hours = entry.get('duration', 0) / 3600 if entry.get('duration') else 0
