@@ -1439,8 +1439,11 @@ if MCP_AVAILABLE:
             rate = project.get('price_per_hour', 0)
             unbilled_amount = unbilled_hours * rate
 
-            # Filter by minimum unbilled hours
-            if unbilled_hours >= min_unbilled_hours:
+            # Filter: must have unbilled hours AND not invoiced this month
+            has_unbilled = unbilled_hours >= min_unbilled_hours
+            not_invoiced_this_month = not last_invoice_date or last_invoice_date < month_start
+
+            if has_unbilled and not_invoiced_this_month:
                 results.append({
                     'project_id': project_id,
                     'project_name': project.get('name'),
