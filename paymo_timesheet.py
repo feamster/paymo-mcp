@@ -20,9 +20,12 @@ from rich.console import Console
 from rich.table import Table
 from rich import print as rprint
 import click
+import io
 
-# When running as MCP server, redirect console to stderr to avoid interfering with JSON-RPC
-console = Console(file=sys.stderr if len(sys.argv) > 1 and sys.argv[1] == 'mcp' else sys.stdout)
+# When running as MCP server, disable all console output to avoid filling Claude's context
+# Claude Desktop captures stderr output and includes it in the conversation
+_is_mcp_mode = len(sys.argv) > 1 and sys.argv[1] == 'mcp'
+console = Console(file=io.StringIO() if _is_mcp_mode else sys.stdout, quiet=_is_mcp_mode)
 
 # MCP Server support (optional)
 MCP_AVAILABLE = False
