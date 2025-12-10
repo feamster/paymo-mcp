@@ -1016,9 +1016,11 @@ if MCP_AVAILABLE:
         tasks = client.get_tasks(project_id)
 
         # Return only essential fields to minimize context usage
+        # Include description since it's often empty but useful when present
         return [{
             'id': t.get('id'),
             'name': t.get('name'),
+            'description': t.get('description', ''),
             'billable': t.get('billable', True)
         } for t in tasks]
 
