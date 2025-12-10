@@ -1254,7 +1254,7 @@ def run_mcp_server():
         console.print("[red]Error: fastmcp not installed. Install with: pip install fastmcp[/red]")
         sys.exit(1)
 
-    console.print("[bold green]Starting Paymo MCP Server...[/bold green]")
+    # Don't print to stdout - interferes with MCP JSON-RPC protocol
     mcp.run()
 
 
