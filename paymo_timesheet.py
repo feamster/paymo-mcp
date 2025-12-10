@@ -988,13 +988,20 @@ if MCP_AVAILABLE:
         client = PaymoClient(api_key)
         projects = client.get_projects()
 
-        # Return only essential fields to minimize context usage
+        # Return essential fields for filtering/querying while removing noise
+        # Keep: identification, status, billing fields
+        # Remove: UI fields (color), internal IDs (workflow_id, budget_id), arrays (users, managers), timestamps
         return [{
             'id': p.get('id'),
             'name': p.get('name'),
+            'code': p.get('code'),
+            'client_id': p.get('client_id'),
             'client_name': p.get('client_name'),
+            'active': p.get('active'),
+            'billable': p.get('billable'),
             'price_per_hour': p.get('price_per_hour'),
-            'billable': p.get('billable', True)
+            'flat_billing': p.get('flat_billing'),
+            'invoiced': p.get('invoiced')
         } for p in projects]
 
     @mcp.tool()
