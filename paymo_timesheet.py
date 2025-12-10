@@ -979,25 +979,41 @@ if MCP_AVAILABLE:
 
     @mcp.tool()
     def list_paymo_projects() -> List[Dict[str, Any]]:
-        """List all active Paymo projects"""
+        """List all active Paymo projects with essential details only"""
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
             raise ValueError("API key not configured in ~/.paymo/config.yaml")
 
         client = PaymoClient(api_key)
-        return client.get_projects()
+        projects = client.get_projects()
+
+        # Return only essential fields to minimize context usage
+        return [{
+            'id': p.get('id'),
+            'name': p.get('name'),
+            'client_name': p.get('client_name'),
+            'price_per_hour': p.get('price_per_hour'),
+            'billable': p.get('billable', True)
+        } for p in projects]
 
     @mcp.tool()
     def list_paymo_tasks(project_id: int) -> List[Dict[str, Any]]:
-        """List tasks for a specific Paymo project"""
+        """List tasks for a specific Paymo project with essential details only"""
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
             raise ValueError("API key not configured")
 
         client = PaymoClient(api_key)
-        return client.get_tasks(project_id)
+        tasks = client.get_tasks(project_id)
+
+        # Return only essential fields to minimize context usage
+        return [{
+            'id': t.get('id'),
+            'name': t.get('name'),
+            'billable': t.get('billable', True)
+        } for t in tasks]
 
     @mcp.tool()
     def create_paymo_entry(
@@ -1248,6 +1264,90 @@ if MCP_AVAILABLE:
                 'billed': entry.get('billed', False),
                 'price': entry.get('price', 0)
             })
+
+        return result
+
+    @mcp.tool()
+    def get_unbilled_summary(
+        start_date: str = None,
+        end_date: str = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get unbilled hours and revenue summary by project.
+        Efficient query that returns only aggregated data, not individual entries.
+
+        Args:
+            start_date: Optional start date (YYYY-MM-DD), defaults to beginning of current year
+            end_date: Optional end date (YYYY-MM-DD), defaults to today
+
+        Returns:
+            List of projects with unbilled summary: project name, client, rate, unbilled hours, unbilled amount
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+
+        # Default date range: current year to today
+        if not start_date:
+            from datetime import datetime
+            start_date = datetime.now().replace(month=1, day=1).strftime('%Y-%m-%d')
+        if not end_date:
+            from datetime import datetime
+            end_date = datetime.now().strftime('%Y-%m-%d')
+
+        # Get all projects
+        projects = client.get_projects()
+
+        # Get all unbilled entries (without fetching task names - more efficient)
+        all_entries = client.get_entries(start_date, end_date)
+        unbilled_entries = [e for e in all_entries if not e.get('billed', False)]
+
+        # Aggregate by project
+        project_summary = {}
+        for entry in unbilled_entries:
+            project_id = entry.get('project_id')
+            if not project_id:
+                continue
+
+            if project_id not in project_summary:
+                project_summary[project_id] = {
+                    'total_hours': 0,
+                    'total_amount': 0
+                }
+
+            # Add hours
+            duration_hours = entry.get('duration', 0) / 3600 if entry.get('duration') else 0
+            project_summary[project_id]['total_hours'] += duration_hours
+
+            # Add amount (use entry price if available, otherwise calculate from duration)
+            price = entry.get('price', 0)
+            if not price and duration_hours > 0:
+                # Find project rate
+                project = next((p for p in projects if p.get('id') == project_id), None)
+                if project:
+                    price = duration_hours * project.get('price_per_hour', 0)
+
+            project_summary[project_id]['total_amount'] += price
+
+        # Build result with project details
+        result = []
+        for project_id, summary in project_summary.items():
+            project = next((p for p in projects if p.get('id') == project_id), None)
+            if project and summary['total_hours'] > 0:
+                result.append({
+                    'project_id': project_id,
+                    'project_name': project.get('name'),
+                    'client_name': project.get('client_name'),
+                    'rate': project.get('price_per_hour'),
+                    'unbilled_hours': round(summary['total_hours'], 2),
+                    'unbilled_amount': round(summary['total_amount'], 2)
+                })
+
+        # Sort by unbilled amount descending
+        result.sort(key=lambda x: x['unbilled_amount'], reverse=True)
 
         return result
 
