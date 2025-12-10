@@ -1126,7 +1126,7 @@ if MCP_AVAILABLE:
     @mcp.tool()
     def list_paymo_invoices(client_id: Optional[int] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        List Paymo invoices
+        List Paymo invoices with essential details only
 
         Args:
             client_id: Filter by client ID
@@ -1138,7 +1138,94 @@ if MCP_AVAILABLE:
             raise ValueError("API key not configured")
 
         client = PaymoClient(api_key)
-        return client.get_invoices(client_id, status)
+        invoices = client.get_invoices(client_id, status)
+
+        # Return only essential fields to minimize context usage
+        # Keep: identification, client, amounts, dates, status
+        # Remove: internal IDs, arrays, detailed line items
+        return [{
+            'id': inv.get('id'),
+            'number': inv.get('number'),
+            'client_id': inv.get('client_id'),
+            'client_name': inv.get('client_name'),
+            'date': inv.get('date'),
+            'due_date': inv.get('due_date'),
+            'status': inv.get('status'),
+            'subtotal': inv.get('subtotal'),
+            'total': inv.get('total'),
+            'currency': inv.get('currency', 'USD')
+        } for inv in invoices]
+
+    @mcp.tool()
+    def get_projects_without_recent_invoices(days: int = 30) -> List[Dict[str, Any]]:
+        """
+        Get active projects that haven't been invoiced in the specified number of days.
+        Efficient for queries like "which projects haven't I invoiced this month?"
+
+        Args:
+            days: Number of days to look back (default 30)
+
+        Returns:
+            List of projects without recent invoices: project name, client, last invoice date, days since last invoice
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+        from datetime import datetime, timedelta
+
+        cutoff_date = datetime.now() - timedelta(days=days)
+
+        # Get all active projects
+        projects = client.get_projects()
+
+        # Get all invoices (we only need recent ones but API doesn't support date filtering)
+        invoices = client.get_invoices()
+
+        # Build map of project -> most recent invoice date
+        project_last_invoice = {}
+        for invoice in invoices:
+            inv_date_str = invoice.get('date', '')
+            if not inv_date_str:
+                continue
+
+            inv_date = datetime.strptime(inv_date_str, '%Y-%m-%d')
+
+            # Find which projects are on this invoice by checking invoice items
+            # For now, use client_id as proxy (simplification)
+            client_id = invoice.get('client_id')
+            for project in projects:
+                if project.get('client_id') == client_id:
+                    project_id = project.get('id')
+                    if project_id not in project_last_invoice or inv_date > project_last_invoice[project_id]:
+                        project_last_invoice[project_id] = inv_date
+
+        # Build result: projects without recent invoices
+        result = []
+        for project in projects:
+            if not project.get('active'):
+                continue
+
+            project_id = project.get('id')
+            last_invoice_date = project_last_invoice.get(project_id)
+
+            # Include if: no invoice ever, or last invoice before cutoff
+            if not last_invoice_date or last_invoice_date < cutoff_date:
+                days_since = (datetime.now() - last_invoice_date).days if last_invoice_date else 999
+                result.append({
+                    'project_id': project_id,
+                    'project_name': project.get('name'),
+                    'client_name': project.get('client_name'),
+                    'last_invoice_date': last_invoice_date.strftime('%Y-%m-%d') if last_invoice_date else 'Never',
+                    'days_since_invoice': days_since
+                })
+
+        # Sort by days since invoice descending
+        result.sort(key=lambda x: x['days_since_invoice'], reverse=True)
+
+        return result
 
     @mcp.tool()
     def get_outstanding_invoices_last_week() -> List[Dict[str, Any]]:
