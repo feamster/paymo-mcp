@@ -1364,6 +1364,104 @@ if MCP_AVAILABLE:
         return result
 
     @mcp.tool()
+    def get_projects_needing_invoicing(
+        month: str = None,
+        min_unbilled_hours: float = 0.0
+    ) -> Dict[str, Any]:
+        """
+        Single efficient query combining invoice recency, unbilled hours, and filtering.
+        Perfect for "what active projects need invoicing?"
+
+        Args:
+            month: Month in YYYY-MM format (defaults to current month)
+            min_unbilled_hours: Minimum unbilled hours to include (default 0)
+
+        Returns:
+            Dict with projects_needing_invoicing, month, total_unbilled
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+        from datetime import datetime, timedelta
+
+        # Parse month or default to current
+        if month:
+            month_start = datetime.strptime(month + '-01', '%Y-%m-%d')
+        else:
+            month_start = datetime.now().replace(day=1)
+            month = month_start.strftime('%Y-%m')
+
+        # Calculate date range: start of month to now (or end of month if past month)
+        end_date = datetime.now()
+        if end_date < month_start:
+            # Future month requested, use end of that month
+            next_month = month_start.replace(day=28) + timedelta(days=4)
+            end_date = next_month - timedelta(days=next_month.day)
+
+        # Get all active projects
+        projects = client.get_projects()
+        active_projects = [p for p in projects if p.get('active')]
+
+        # Get all entries for the last 90 days (to check both billed and unbilled)
+        start_search = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+        end_search = datetime.now().strftime('%Y-%m-%d')
+        all_entries = client.get_entries(start_search, end_search)
+
+        # Process each project
+        results = []
+        total_unbilled = 0
+
+        for project in active_projects:
+            project_id = project.get('id')
+
+            # Get entries for this project
+            project_entries = [e for e in all_entries if e.get('project_id') == project_id]
+
+            # Find last invoice date (most recent billed entry)
+            billed_entries = [e for e in project_entries if e.get('invoice_item_id')]
+            last_invoice_date = None
+            if billed_entries:
+                # Find most recent billed entry
+                for entry in billed_entries:
+                    entry_date_str = entry.get('date') or entry.get('start_time', '')[:10]
+                    if entry_date_str:
+                        entry_date = datetime.strptime(entry_date_str, '%Y-%m-%d')
+                        if not last_invoice_date or entry_date > last_invoice_date:
+                            last_invoice_date = entry_date
+
+            # Calculate unbilled hours/amount
+            unbilled_entries = [e for e in project_entries if not e.get('billed', False)]
+            unbilled_hours = sum(e.get('duration', 0) / 3600 for e in unbilled_entries)
+
+            rate = project.get('price_per_hour', 0)
+            unbilled_amount = unbilled_hours * rate
+
+            # Filter by minimum unbilled hours
+            if unbilled_hours >= min_unbilled_hours:
+                results.append({
+                    'project_id': project_id,
+                    'project_name': project.get('name'),
+                    'client_name': project.get('client_name'),
+                    'rate': rate,
+                    'last_invoice_date': last_invoice_date.strftime('%Y-%m-%d') if last_invoice_date else None,
+                    'unbilled_hours': round(unbilled_hours, 2),
+                    'unbilled_amount': round(unbilled_amount, 2)
+                })
+                total_unbilled += unbilled_amount
+
+        # Sort by unbilled amount descending
+        results.sort(key=lambda x: x['unbilled_amount'], reverse=True)
+
+        return {
+            'projects_needing_invoicing': results,
+            'month': month,
+            'total_unbilled': round(total_unbilled, 2)
+        }
+
+    @mcp.tool()
     def get_unbilled_summary(
         start_date: str = None,
         end_date: str = None
