@@ -1286,7 +1286,7 @@ if MCP_AVAILABLE:
         Efficient query that returns only aggregated data, not individual entries.
 
         Args:
-            start_date: Optional start date (YYYY-MM-DD), defaults to beginning of current year
+            start_date: Optional start date (YYYY-MM-DD), defaults to 60 days ago
             end_date: Optional end date (YYYY-MM-DD), defaults to today
 
         Returns:
@@ -1299,10 +1299,10 @@ if MCP_AVAILABLE:
 
         client = PaymoClient(api_key)
 
-        # Default date range: current year to today
+        # Default date range: last 60 days (more reasonable than entire year)
         if not start_date:
-            from datetime import datetime
-            start_date = datetime.now().replace(month=1, day=1).strftime('%Y-%m-%d')
+            from datetime import datetime, timedelta
+            start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
         if not end_date:
             from datetime import datetime
             end_date = datetime.now().strftime('%Y-%m-%d')
