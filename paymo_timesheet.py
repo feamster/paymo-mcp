@@ -21,7 +21,8 @@ from rich.table import Table
 from rich import print as rprint
 import click
 
-console = Console()
+# When running as MCP server, redirect console to stderr to avoid interfering with JSON-RPC
+console = Console(file=sys.stderr if len(sys.argv) > 1 and sys.argv[1] == 'mcp' else sys.stdout)
 
 # MCP Server support (optional)
 MCP_AVAILABLE = False
@@ -274,17 +275,17 @@ class PaymoClient:
             except Exception as e:
                 # If we hit a rate limit, wait and retry once
                 if '429' in str(e):
-                    print(f"Rate limit hit, waiting 6 seconds...")
+                    console.print(f"Rate limit hit, waiting 6 seconds...")
                     time.sleep(6)
                     try:
                         task_response = self._request('GET', f'tasks/{task_id}')
                         task_data = task_response.get('tasks', [{}])[0] if 'tasks' in task_response else {}
                         task_cache[task_id] = task_data.get('name', '')
                     except Exception as retry_err:
-                        print(f"Warning: Failed to fetch task {task_id} after retry: {retry_err}")
+                        console.print(f"Warning: Failed to fetch task {task_id} after retry: {retry_err}")
                         task_cache[task_id] = ''
                 else:
-                    print(f"Warning: Failed to fetch task {task_id}: {e}")
+                    console.print(f"Warning: Failed to fetch task {task_id}: {e}")
                     task_cache[task_id] = ''
 
         # Create CSV
@@ -383,17 +384,17 @@ class PaymoClient:
             except Exception as e:
                 # If we hit a rate limit, wait and retry once
                 if '429' in str(e):
-                    print(f"Rate limit hit, waiting 6 seconds...")
+                    console.print(f"Rate limit hit, waiting 6 seconds...")
                     time.sleep(6)
                     try:
                         task_response = self._request('GET', f'tasks/{task_id}')
                         task_data = task_response.get('tasks', [{}])[0] if 'tasks' in task_response else {}
                         task_cache[task_id] = task_data.get('name', '')
                     except Exception as retry_err:
-                        print(f"Warning: Failed to fetch task {task_id} after retry: {retry_err}")
+                        console.print(f"Warning: Failed to fetch task {task_id} after retry: {retry_err}")
                         task_cache[task_id] = ''
                 else:
-                    print(f"Warning: Failed to fetch task {task_id}: {e}")
+                    console.print(f"Warning: Failed to fetch task {task_id}: {e}")
                     task_cache[task_id] = ''
 
         # Create CSV
