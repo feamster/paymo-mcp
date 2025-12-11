@@ -1466,8 +1466,9 @@ if MCP_AVAILABLE:
         active_projects = [p for p in projects if p.get('active')]
 
         # Get all entries for the last 90 days (to check both billed and unbilled)
+        # Use tomorrow as end date to catch entries for "today" in all timezones
         start_search = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
-        end_search = datetime.now().strftime('%Y-%m-%d')
+        end_search = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
         all_entries = client.get_entries(start_search, end_search)
 
         # Process each project
@@ -1535,7 +1536,7 @@ if MCP_AVAILABLE:
 
         Args:
             start_date: Optional start date (YYYY-MM-DD), defaults to 60 days ago
-            end_date: Optional end date (YYYY-MM-DD), defaults to today
+            end_date: Optional end date (YYYY-MM-DD), defaults to tomorrow (to catch today's entries in all timezones)
 
         Returns:
             List of projects with unbilled summary: project name, client, rate, unbilled hours, unbilled amount
@@ -1547,13 +1548,14 @@ if MCP_AVAILABLE:
 
         client = PaymoClient(api_key)
 
-        # Default date range: last 60 days (more reasonable than entire year)
+        # Default date range: last 60 days to tomorrow (to catch timezone edge cases)
+        from datetime import datetime, timedelta
         if not start_date:
-            from datetime import datetime, timedelta
             start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
         if not end_date:
-            from datetime import datetime
-            end_date = datetime.now().strftime('%Y-%m-%d')
+            # Use tomorrow to ensure we catch entries for "today" in all timezones
+            # and any entries dated for tomorrow that were entered early
+            end_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
 
         # Get all projects
         projects = client.get_projects()
