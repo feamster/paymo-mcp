@@ -1005,15 +1005,20 @@ if MCP_AVAILABLE:
         } for c in clients]
 
     @mcp.tool()
-    def list_paymo_projects() -> List[Dict[str, Any]]:
-        """List all active Paymo projects with essential details only"""
+    def list_paymo_projects(include_inactive: bool = False) -> List[Dict[str, Any]]:
+        """
+        List Paymo projects with essential details only
+
+        Args:
+            include_inactive: If True, includes archived/inactive projects (default: False)
+        """
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
             raise ValueError("API key not configured in ~/.paymo/config.yaml")
 
         client = PaymoClient(api_key)
-        projects = client.get_projects()
+        projects = client.get_projects(active_only=not include_inactive)
 
         # Return essential fields for filtering/querying while removing noise
         # Keep: identification, status, billing fields
