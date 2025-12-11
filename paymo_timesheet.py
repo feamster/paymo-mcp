@@ -987,15 +987,20 @@ if MCP_AVAILABLE:
     mcp = FastMCP("Paymo Timesheet Manager")
 
     @mcp.tool()
-    def list_paymo_clients() -> List[Dict[str, Any]]:
-        """List all active Paymo clients with essential details only"""
+    def list_paymo_clients(include_inactive: bool = False) -> List[Dict[str, Any]]:
+        """
+        List Paymo clients with essential details only
+
+        Args:
+            include_inactive: If True, includes inactive/archived clients (default: False)
+        """
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
             raise ValueError("API key not configured in ~/.paymo/config.yaml")
 
         client = PaymoClient(api_key)
-        clients = client.get_clients()
+        clients = client.get_clients(active_only=not include_inactive)
 
         # Return only essential fields to minimize context usage
         return [{
