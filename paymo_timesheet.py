@@ -82,6 +82,15 @@ class PaymoClient:
             console.print(f"[red]Request failed: {e}[/red]")
             raise
 
+    def get_clients(self, active_only: bool = True) -> List[Dict]:
+        """List all clients"""
+        endpoint = "clients"
+        if active_only:
+            endpoint += "?where=active=true"
+
+        response = self._request('GET', endpoint)
+        return response.get('clients', [])
+
     def get_projects(self, active_only: bool = True) -> List[Dict]:
         """List all projects"""
         endpoint = "projects"
@@ -976,6 +985,24 @@ def export_timesheet(start: str, end: str, project_id: Optional[int], output: Op
 # MCP Server Implementation
 if MCP_AVAILABLE:
     mcp = FastMCP("Paymo Timesheet Manager")
+
+    @mcp.tool()
+    def list_paymo_clients() -> List[Dict[str, Any]]:
+        """List all active Paymo clients with essential details only"""
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.paymo/config.yaml")
+
+        client = PaymoClient(api_key)
+        clients = client.get_clients()
+
+        # Return only essential fields to minimize context usage
+        return [{
+            'id': c.get('id'),
+            'name': c.get('name'),
+            'active': c.get('active', True)
+        } for c in clients]
 
     @mcp.tool()
     def list_paymo_projects() -> List[Dict[str, Any]]:
