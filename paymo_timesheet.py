@@ -213,12 +213,18 @@ class PaymoClient:
 
         return outstanding
 
-    def export_invoice_entries_csv(self, invoice_id: int) -> str:
+    def export_invoice_entries_csv(self, invoice_id: int,
+                                     include_date: bool = True,
+                                     include_start_time: bool = True,
+                                     include_end_time: bool = True) -> str:
         """
         Export CSV of entries that are actually on a specific invoice
 
         Args:
             invoice_id: Invoice ID
+            include_date: Include date column (default True)
+            include_start_time: Include start time column (default True)
+            include_end_time: Include end time column (default True)
 
         Returns:
             CSV content as string
@@ -237,7 +243,16 @@ class PaymoClient:
         invoice_item_ids = set(item.get('id') for item in invoice_items if item.get('id'))
 
         if not invoice_item_ids:
-            return "Date,Start Time,End Time,Duration (hours),Task,Description,Billed,Entry ID\n"
+            # Build header based on included columns
+            header_parts = []
+            if include_date:
+                header_parts.append('Date')
+            if include_start_time:
+                header_parts.append('Start Time')
+            if include_end_time:
+                header_parts.append('End Time')
+            header_parts.extend(['Duration (hours)', 'Task', 'Description', 'Billed', 'Entry ID'])
+            return ','.join(header_parts) + '\n'
 
         # Get all entries and filter by invoice_item_id
         # We need to fetch entries to check their invoice_item_id
@@ -304,9 +319,16 @@ class PaymoClient:
         output = io.StringIO()
         writer = csv.writer(output)
 
-        # Header
-        writer.writerow(['Date', 'Start Time', 'End Time', 'Duration (hours)',
-                        'Task', 'Description', 'Billed', 'Entry ID'])
+        # Header - build based on included columns
+        header = []
+        if include_date:
+            header.append('Date')
+        if include_start_time:
+            header.append('Start Time')
+        if include_end_time:
+            header.append('End Time')
+        header.extend(['Duration (hours)', 'Task', 'Description', 'Billed', 'Entry ID'])
+        writer.writerow(header)
 
         # Rows
         for entry in entries:
@@ -332,16 +354,27 @@ class PaymoClient:
                 end = dateparser.parse(entry.get('end_time', ''))
                 duration_hours = (end - start).total_seconds() / 3600 if start and end else 0
 
-            writer.writerow([
-                entry.get('date', ''),
-                entry.get('start_time', ''),
-                entry.get('end_time', ''),
+            # Extract date from start_time if date field is empty
+            entry_date = entry.get('date', '')
+            if not entry_date and entry.get('start_time'):
+                entry_date = entry.get('start_time', '')[:10]
+
+            # Build row based on included columns
+            row = []
+            if include_date:
+                row.append(entry_date)
+            if include_start_time:
+                row.append(entry.get('start_time', ''))
+            if include_end_time:
+                row.append(entry.get('end_time', ''))
+            row.extend([
                 f"{duration_hours:.2f}",
                 task_name,
                 description,
                 'Yes' if entry.get('billed') else 'No',
                 entry.get('id', '')
             ])
+            writer.writerow(row)
 
         return output.getvalue()
 
@@ -441,8 +474,13 @@ class PaymoClient:
                 end = dateparser.parse(entry.get('end_time', ''))
                 duration_hours = (end - start).total_seconds() / 3600 if start and end else 0
 
+            # Extract date from start_time if date field is empty
+            entry_date = entry.get('date', '')
+            if not entry_date and entry.get('start_time'):
+                entry_date = entry.get('start_time', '')[:10]
+
             writer.writerow([
-                entry.get('date', ''),
+                entry_date,
                 entry.get('start_time', ''),
                 entry.get('end_time', ''),
                 f"{duration_hours:.2f}",
@@ -1669,7 +1707,11 @@ def list_invoices_filtered(status: Optional[str], last_week: bool):
 @click.option('--invoice-id', type=int, help='Specific invoice ID')
 @click.option('--last-week', is_flag=True, help='Export for all outstanding invoices from last week')
 @click.option('--output-dir', '-o', default='.', help='Output directory for exports')
-def export_invoice_timesheets(invoice_id: Optional[int], last_week: bool, output_dir: str):
+@click.option('--no-date', is_flag=True, help='Exclude date column')
+@click.option('--no-start-time', is_flag=True, help='Exclude start time column')
+@click.option('--no-end-time', is_flag=True, help='Exclude end time column')
+def export_invoice_timesheets(invoice_id: Optional[int], last_week: bool, output_dir: str,
+                              no_date: bool, no_start_time: bool, no_end_time: bool):
     """Export timesheets for invoice(s)"""
     config = load_config()
     api_key = config.get('api_key') or click.prompt('Paymo API Key', hide_input=True)
@@ -1721,7 +1763,12 @@ def export_invoice_timesheets(invoice_id: Optional[int], last_week: bool, output
 
         try:
             # Export timesheet - use invoice-specific method to get only entries on this invoice
-            csv_content = client.export_invoice_entries_csv(inv_id)
+            csv_content = client.export_invoice_entries_csv(
+                inv_id,
+                include_date=not no_date,
+                include_start_time=not no_start_time,
+                include_end_time=not no_end_time
+            )
 
             # Save file
             filename = f"{inv_number.replace('#', '').replace('/', '-')}_timesheet.csv"
