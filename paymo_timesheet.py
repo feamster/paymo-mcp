@@ -1107,7 +1107,8 @@ if MCP_AVAILABLE:
         duration_hours: float = None,
         start_time: str = None,
         end_time: str = None,
-        added_manually: bool = True
+        added_manually: bool = True,
+        timezone: str = "America/Chicago"
     ) -> Dict[str, Any]:
         """
         Create a single time entry in Paymo.
@@ -1124,6 +1125,7 @@ if MCP_AVAILABLE:
             start_time: Start time in HH:MM 24-hour format (use with end_time)
             end_time: End time in HH:MM 24-hour format (use with start_time)
             added_manually: Entry type - True for manual/form entry (default), False for timer-tracked
+            timezone: IANA timezone for start/end times (default: America/Chicago)
         """
         config = load_config()
         api_key = config.get('api_key')
@@ -1142,16 +1144,16 @@ if MCP_AVAILABLE:
 
         if start_time and end_time:
             # Precise time block entry - Paymo calculates duration from start/end
-            # Convert CT (America/Chicago) to UTC for API
+            # Convert local timezone to UTC for API
             from zoneinfo import ZoneInfo
-            ct = ZoneInfo("America/Chicago")
+            local_tz = ZoneInfo(timezone)
             utc = ZoneInfo("UTC")
 
             start_dt = datetime.strptime(f"{date} {start_time}", "%Y-%m-%d %H:%M")
-            start_dt = start_dt.replace(tzinfo=ct).astimezone(utc)
+            start_dt = start_dt.replace(tzinfo=local_tz).astimezone(utc)
 
             end_dt = datetime.strptime(f"{date} {end_time}", "%Y-%m-%d %H:%M")
-            end_dt = end_dt.replace(tzinfo=ct).astimezone(utc)
+            end_dt = end_dt.replace(tzinfo=local_tz).astimezone(utc)
 
             payload['start_time'] = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
             payload['end_time'] = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
