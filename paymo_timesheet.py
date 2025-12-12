@@ -1361,6 +1361,26 @@ if MCP_AVAILABLE:
         return output_path
 
     @mcp.tool()
+    def delete_paymo_entry(entry_id: int) -> str:
+        """
+        Delete a time entry by ID
+
+        Args:
+            entry_id: The ID of the time entry to delete
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+        try:
+            client.delete_entry(entry_id)
+            return f"Successfully deleted entry {entry_id}"
+        except Exception as e:
+            return f"Failed to delete entry: {e}"
+
+    @mcp.tool()
     def list_paymo_entries(
         start_date: str,
         end_date: str,
