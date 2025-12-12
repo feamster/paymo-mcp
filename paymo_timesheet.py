@@ -165,6 +165,11 @@ class PaymoClient:
         response = self._request('POST', 'tasks', json=data)
         return response
 
+    def update_task(self, task_id: int, **kwargs) -> Dict:
+        """Update a task (name, billable, etc.)"""
+        response = self._request('PUT', f'tasks/{task_id}', json=kwargs)
+        return response.get('tasks', [response])[0] if 'tasks' in response else response
+
     def get_invoices(self, client_id: Optional[int] = None, status: Optional[str] = None) -> List[Dict]:
         """
         List invoices, optionally filtered by client and status
@@ -1098,6 +1103,23 @@ if MCP_AVAILABLE:
             'description': t.get('description', ''),
             'billable': t.get('billable', True)
         } for t in tasks]
+
+    @mcp.tool()
+    def rename_paymo_task(task_id: int, name: str) -> Dict[str, Any]:
+        """
+        Rename a Paymo task
+
+        Args:
+            task_id: Paymo task ID
+            name: New name for the task
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+        return client.update_task(task_id, name=name)
 
     @mcp.tool()
     def create_paymo_entry(
