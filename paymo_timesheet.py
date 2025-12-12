@@ -155,6 +155,11 @@ class PaymoClient:
         response = self._request('DELETE', f'entries/{entry_id}')
         return response
 
+    def update_entry(self, entry_id: int, **kwargs) -> Dict:
+        """Update a time entry (billed, description, etc.)"""
+        response = self._request('PUT', f'entries/{entry_id}', json=kwargs)
+        return response.get('entries', [response])[0] if 'entries' in response else response
+
     def create_task(self, project_id: int, name: str, billable: bool = True) -> Dict:
         """Create a new task in a project"""
         data = {
@@ -1437,6 +1442,23 @@ if MCP_AVAILABLE:
             return f"Successfully deleted entry {entry_id}"
         except Exception as e:
             return f"Failed to delete entry: {e}"
+
+    @mcp.tool()
+    def mark_paymo_entry_billed(entry_id: int, billed: bool = True) -> Dict[str, Any]:
+        """
+        Mark a time entry as billed or unbilled
+
+        Args:
+            entry_id: The ID of the time entry
+            billed: True to mark as billed, False to mark as unbilled (default: True)
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+        return client.update_entry(entry_id, billed=billed)
 
     @mcp.tool()
     def list_paymo_entries(
