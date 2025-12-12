@@ -1142,8 +1142,9 @@ if MCP_AVAILABLE:
 
         if start_time and end_time:
             # Precise time block entry - Paymo calculates duration from start/end
-            payload['start_time'] = f"{start_time}:00"  # HH:MM:SS format
-            payload['end_time'] = f"{end_time}:00"
+            # Must include date in ISO format for correct date attribution
+            payload['start_time'] = f"{date}T{start_time}:00"
+            payload['end_time'] = f"{date}T{end_time}:00"
         elif duration_hours is not None:
             # Simple duration entry
             payload['duration'] = int(duration_hours * 3600)
