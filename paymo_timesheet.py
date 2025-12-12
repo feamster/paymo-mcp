@@ -1103,17 +1103,27 @@ if MCP_AVAILABLE:
     def create_paymo_entry(
         task_id: int,
         date: str,
-        duration_hours: float,
-        description: str
+        description: str,
+        duration_hours: float = None,
+        start_time: str = None,
+        end_time: str = None,
+        added_manually: bool = True
     ) -> Dict[str, Any]:
         """
-        Create a single time entry in Paymo
+        Create a single time entry in Paymo.
+
+        Provide EITHER:
+        - duration_hours for simple duration logging (e.g., "3 hours on this task"), OR
+        - start_time + end_time for precise time blocks (e.g., "12:30 PM - 3:21 PM")
 
         Args:
             task_id: Paymo task ID
             date: Date in YYYY-MM-DD format
-            duration_hours: Hours worked
             description: Entry description
+            duration_hours: Hours worked (use this OR start_time/end_time)
+            start_time: Start time in HH:MM 24-hour format (use with end_time)
+            end_time: End time in HH:MM 24-hour format (use with start_time)
+            added_manually: Entry type - True for manual/form entry (default), False for timer-tracked
         """
         config = load_config()
         api_key = config.get('api_key')
@@ -1122,12 +1132,25 @@ if MCP_AVAILABLE:
 
         client = PaymoClient(api_key)
 
-        return client.create_entry(
-            task_id=task_id,
-            date=date,
-            duration=int(duration_hours * 3600),
-            description=description
-        )
+        # Build payload based on what was provided
+        payload = {
+            'task_id': task_id,
+            'date': date,
+            'description': description,
+            'added_manually': added_manually
+        }
+
+        if start_time and end_time:
+            # Precise time block entry - Paymo calculates duration from start/end
+            payload['start_time'] = f"{start_time}:00"  # HH:MM:SS format
+            payload['end_time'] = f"{end_time}:00"
+        elif duration_hours is not None:
+            # Simple duration entry
+            payload['duration'] = int(duration_hours * 3600)
+        else:
+            raise ValueError("Provide either duration_hours OR both start_time and end_time")
+
+        return client.create_entry(**payload)
 
     @mcp.tool()
     def submit_paymo_timesheet(yaml_content: str) -> Dict[str, Any]:
