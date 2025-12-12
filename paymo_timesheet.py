@@ -1142,9 +1142,19 @@ if MCP_AVAILABLE:
 
         if start_time and end_time:
             # Precise time block entry - Paymo calculates duration from start/end
-            # Must include date in ISO format for correct date attribution
-            payload['start_time'] = f"{date}T{start_time}:00"
-            payload['end_time'] = f"{date}T{end_time}:00"
+            # Convert CT (America/Chicago) to UTC for API
+            from zoneinfo import ZoneInfo
+            ct = ZoneInfo("America/Chicago")
+            utc = ZoneInfo("UTC")
+
+            start_dt = datetime.strptime(f"{date} {start_time}", "%Y-%m-%d %H:%M")
+            start_dt = start_dt.replace(tzinfo=ct).astimezone(utc)
+
+            end_dt = datetime.strptime(f"{date} {end_time}", "%Y-%m-%d %H:%M")
+            end_dt = end_dt.replace(tzinfo=ct).astimezone(utc)
+
+            payload['start_time'] = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
+            payload['end_time'] = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
         elif duration_hours is not None:
             # Simple duration entry
             payload['duration'] = int(duration_hours * 3600)
