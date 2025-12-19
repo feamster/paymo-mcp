@@ -794,19 +794,33 @@ class TimesheetProcessor:
 
 
 def load_config() -> Dict:
-    """Load configuration from ~/.paymo/config.yaml"""
-    config_path = Path.home() / '.paymo' / 'config.yaml'
+    """Load configuration from ~/.mcp-config/paymo/ and ~/.mcp-auth/paymo/"""
+    config_dir = Path.home() / '.mcp-config' / 'paymo'
+    auth_dir = Path.home() / '.mcp-auth' / 'paymo'
 
-    if not config_path.exists():
-        console.print(f"[yellow]Warning: Config file not found at {config_path}[/yellow]")
-        console.print("[yellow]Using environment variable PAYMO_API_KEY or will prompt[/yellow]")
-        return {
-            'timezone': 'America/Chicago',
-            'projects': {}
-        }
+    # Start with defaults
+    config = {
+        'timezone': 'America/Chicago',
+        'projects': {}
+    }
 
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+    # Load non-sensitive config
+    config_path = config_dir / 'config.json'
+    if config_path.exists():
+        with open(config_path, 'r') as f:
+            config.update(json.load(f))
+
+    # Load API key from auth
+    auth_path = auth_dir / 'auth.json'
+    if auth_path.exists():
+        with open(auth_path, 'r') as f:
+            auth_data = json.load(f)
+            config['api_key'] = auth_data.get('api_key')
+    else:
+        console.print(f"[yellow]Warning: Auth file not found at {auth_path}[/yellow]")
+        console.print("[yellow]Will prompt for API key if needed[/yellow]")
+
+    return config
 
 
 @click.group()
@@ -1056,7 +1070,7 @@ if MCP_AVAILABLE:
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
-            raise ValueError("API key not configured in ~/.paymo/config.yaml")
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
 
         client = PaymoClient(api_key)
         clients = client.get_clients(active_only=not include_inactive)
@@ -1079,7 +1093,7 @@ if MCP_AVAILABLE:
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
-            raise ValueError("API key not configured in ~/.paymo/config.yaml")
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
 
         client = PaymoClient(api_key)
         projects = client.get_projects(active_only=not include_inactive)
@@ -1129,7 +1143,7 @@ if MCP_AVAILABLE:
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
-            raise ValueError("API key not configured in ~/.paymo/config.yaml")
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
 
         client = PaymoClient(api_key)
 
@@ -1189,7 +1203,7 @@ if MCP_AVAILABLE:
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
-            raise ValueError("API key not configured in ~/.paymo/config.yaml")
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
 
         client = PaymoClient(api_key)
 
