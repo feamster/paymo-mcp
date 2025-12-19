@@ -28,16 +28,26 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Create `~/.paymo/config.yaml`:
+Configuration is split between non-sensitive settings and auth:
 
-```yaml
-api_key: "your-paymo-api-key-here"
-timezone: "America/Chicago"
+**`~/.mcp-config/paymo/config.json`** (non-sensitive, can be in dotfiles):
+```json
+{
+  "timezone": "America/Chicago",
+  "projects": {
+    "Client Matter Name": {
+      "project_id": 12345,
+      "task_id": 67890
+    }
+  }
+}
+```
 
-projects:
-  "Client Matter Name":
-    project_id: 12345
-    task_id: 67890  # Default task for quick entries
+**`~/.mcp-auth/paymo/auth.json`** (sensitive, sync separately):
+```json
+{
+  "api_key": "your-paymo-api-key-here"
+}
 ```
 
 ### Getting Your API Key
@@ -326,7 +336,7 @@ The script automatically handles Paymo's API rate limits:
 
 ### "API key not configured"
 
-Create `~/.paymo/config.yaml` with your API key (see Configuration section).
+Create `~/.mcp-auth/paymo/auth.json` with your API key (see Configuration section).
 
 ### "fastmcp not installed"
 
