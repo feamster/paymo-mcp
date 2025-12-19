@@ -175,6 +175,17 @@ class PaymoClient:
         response = self._request('PUT', f'tasks/{task_id}', json=kwargs)
         return response.get('tasks', [response])[0] if 'tasks' in response else response
 
+    def create_project(self, name: str, client_id: int, **kwargs) -> Dict:
+        """Create a new project"""
+        data = {'name': name, 'client_id': client_id, **kwargs}
+        response = self._request('POST', 'projects', json=data)
+        return response.get('projects', [{}])[0] if 'projects' in response else response
+
+    def update_project(self, project_id: int, **kwargs) -> Dict:
+        """Update an existing project"""
+        response = self._request('PUT', f'projects/{project_id}', json=kwargs)
+        return response.get('projects', [{}])[0] if 'projects' in response else response
+
     def get_invoices(self, client_id: Optional[int] = None, status: Optional[str] = None) -> List[Dict]:
         """
         List invoices, optionally filtered by client and status
@@ -1090,6 +1101,132 @@ if MCP_AVAILABLE:
         } for p in projects]
 
     @mcp.tool()
+    def create_paymo_project(
+        name: str,
+        client_id: int,
+        code: Optional[str] = None,
+        price_per_hour: Optional[float] = None,
+        billable: bool = True,
+        flat_billing: bool = False,
+        active: bool = True,
+        hourly_billing_mode: str = "project_rate",
+        adjustable_hours: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Create a new Paymo project
+
+        Args:
+            name: Project name (e.g., "MacKinnon v. Meta")
+            client_id: Paymo client ID
+            code: Short project code (e.g., "MVM")
+            price_per_hour: Hourly billing rate (e.g., 675)
+            billable: Whether project is billable (default: True)
+            flat_billing: Use flat rate instead of hourly (default: False)
+            active: Whether project is active (default: True)
+            hourly_billing_mode: Billing mode - "project_rate" or "task_rate" (default: "project_rate")
+            adjustable_hours: Auto-adjust budget based on task budgets (default: True)
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.paymo/config.yaml")
+
+        client = PaymoClient(api_key)
+
+        # Build kwargs for optional parameters
+        kwargs = {
+            'billable': billable,
+            'flat_billing': flat_billing,
+            'active': active,
+            'hourly_billing_mode': hourly_billing_mode,
+            'adjustable_hours': adjustable_hours
+        }
+        if code:
+            kwargs['code'] = code
+        if price_per_hour is not None:
+            kwargs['price_per_hour'] = price_per_hour
+
+        p = client.create_project(name, client_id, **kwargs)
+
+        return {
+            'id': p.get('id'),
+            'name': p.get('name'),
+            'code': p.get('code'),
+            'client_id': p.get('client_id'),
+            'price_per_hour': p.get('price_per_hour'),
+            'hourly_billing_mode': p.get('hourly_billing_mode'),
+            'adjustable_hours': p.get('adjustable_hours'),
+            'billable': p.get('billable'),
+            'active': p.get('active')
+        }
+
+    @mcp.tool()
+    def update_paymo_project(
+        project_id: int,
+        name: Optional[str] = None,
+        code: Optional[str] = None,
+        price_per_hour: Optional[float] = None,
+        billable: Optional[bool] = None,
+        flat_billing: Optional[bool] = None,
+        active: Optional[bool] = None,
+        hourly_billing_mode: Optional[str] = None,
+        adjust_price: Optional[bool] = None
+    ) -> Dict[str, Any]:
+        """
+        Update an existing Paymo project
+
+        Args:
+            project_id: Paymo project ID
+            name: Project name
+            code: Short project code
+            price_per_hour: Hourly billing rate
+            billable: Whether project is billable
+            flat_billing: Use flat rate instead of hourly
+            active: Whether project is active
+            hourly_billing_mode: Billing mode - "project_rate" or "task_rate"
+            adjust_price: Budget estimate adjusted automatically
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.paymo/config.yaml")
+
+        client = PaymoClient(api_key)
+
+        # Build payload with only provided values
+        payload = {}
+        if name is not None:
+            payload['name'] = name
+        if code is not None:
+            payload['code'] = code
+        if price_per_hour is not None:
+            payload['price_per_hour'] = price_per_hour
+        if billable is not None:
+            payload['billable'] = billable
+        if flat_billing is not None:
+            payload['flat_billing'] = flat_billing
+        if active is not None:
+            payload['active'] = active
+        if hourly_billing_mode is not None:
+            payload['hourly_billing_mode'] = hourly_billing_mode
+        if adjust_price is not None:
+            payload['adjust_price'] = adjust_price
+
+        p = client.update_project(project_id, **payload)
+
+        return {
+            'id': p.get('id'),
+            'name': p.get('name'),
+            'code': p.get('code'),
+            'client_id': p.get('client_id'),
+            'price_per_hour': p.get('price_per_hour'),
+            'hourly_billing_mode': p.get('hourly_billing_mode'),
+            'adjust_price': p.get('adjust_price'),
+            'billable': p.get('billable'),
+            'active': p.get('active')
+        }
+
+    @mcp.tool()
     def list_paymo_tasks(project_id: int) -> List[Dict[str, Any]]:
         """List tasks for a specific Paymo project with essential details only"""
         config = load_config()
@@ -1125,6 +1262,36 @@ if MCP_AVAILABLE:
 
         client = PaymoClient(api_key)
         return client.update_task(task_id, name=name)
+
+    @mcp.tool()
+    def create_paymo_task(
+        project_id: int,
+        name: str,
+        billable: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Create a new task in a Paymo project
+
+        Args:
+            project_id: Paymo project ID
+            name: Task name (e.g., "Document Review")
+            billable: Whether task is billable (default: True)
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+        result = client.create_task(project_id, name, billable)
+        t = result.get('tasks', [{}])[0] if 'tasks' in result else result
+
+        return {
+            'id': t.get('id'),
+            'name': t.get('name'),
+            'project_id': t.get('project_id'),
+            'billable': t.get('billable')
+        }
 
     @mcp.tool()
     def create_paymo_entry(
