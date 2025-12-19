@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git push)",
+      "Bash(python3:*)",
+      "Bash(cat:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(timeout 3 python3:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}
