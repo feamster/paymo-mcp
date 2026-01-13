@@ -91,6 +91,12 @@ class PaymoClient:
         response = self._request('GET', endpoint)
         return response.get('clients', [])
 
+    def create_client(self, name: str, **kwargs) -> Dict:
+        """Create a new client"""
+        data = {'name': name, **kwargs}
+        response = self._request('POST', 'clients', json=data)
+        return response.get('clients', [{}])[0] if 'clients' in response else response
+
     def get_projects(self, active_only: bool = True) -> List[Dict]:
         """List all projects"""
         endpoint = "projects"
@@ -1083,6 +1089,76 @@ if MCP_AVAILABLE:
         } for c in clients]
 
     @mcp.tool()
+    def create_paymo_client(
+        name: str,
+        address: Optional[str] = None,
+        city: Optional[str] = None,
+        state: Optional[str] = None,
+        postal_code: Optional[str] = None,
+        country: Optional[str] = None,
+        phone: Optional[str] = None,
+        email: Optional[str] = None,
+        website: Optional[str] = None,
+        fiscal_information: Optional[str] = None,
+        active: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Create a new Paymo client with contact information
+
+        Args:
+            name: Client/company name (required, e.g., "Baker McKenzie")
+            address: Street address
+            city: City
+            state: State/Province
+            postal_code: ZIP/Postal code
+            country: Country
+            phone: Phone number
+            email: Primary contact email
+            website: Website URL
+            fiscal_information: Tax ID or fiscal info
+            active: Whether client is active (default: True)
+
+        Returns:
+            Created client details: id, name, email, active status
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+
+        client = PaymoClient(api_key)
+
+        # Build kwargs for optional parameters
+        kwargs = {'active': active}
+        if address:
+            kwargs['address'] = address
+        if city:
+            kwargs['city'] = city
+        if state:
+            kwargs['state'] = state
+        if postal_code:
+            kwargs['postal_code'] = postal_code
+        if country:
+            kwargs['country'] = country
+        if phone:
+            kwargs['phone'] = phone
+        if email:
+            kwargs['email'] = email
+        if website:
+            kwargs['website'] = website
+        if fiscal_information:
+            kwargs['fiscal_information'] = fiscal_information
+
+        c = client.create_client(name, **kwargs)
+
+        return {
+            'id': c.get('id'),
+            'name': c.get('name'),
+            'email': c.get('email'),
+            'active': c.get('active')
+        }
+
+    @mcp.tool()
     def list_paymo_projects(include_inactive: bool = False) -> List[Dict[str, Any]]:
         """
         List Paymo projects with essential details only
@@ -1140,6 +1216,11 @@ if MCP_AVAILABLE:
             hourly_billing_mode: Billing mode - "project_rate" or "task_rate" (default: "project_rate")
             adjustable_hours: Auto-adjust budget based on task budgets (default: True)
         """
+        # Convert parameters to proper types (MCP may pass strings)
+        client_id = int(client_id)
+        if price_per_hour is not None:
+            price_per_hour = float(price_per_hour)
+
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
@@ -1200,6 +1281,11 @@ if MCP_AVAILABLE:
             hourly_billing_mode: Billing mode - "project_rate" or "task_rate"
             adjust_price: Budget estimate adjusted automatically
         """
+        # Convert parameters to proper types (MCP may pass strings)
+        project_id = int(project_id)
+        if price_per_hour is not None:
+            price_per_hour = float(price_per_hour)
+
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
@@ -1243,6 +1329,9 @@ if MCP_AVAILABLE:
     @mcp.tool()
     def list_paymo_tasks(project_id: int) -> List[Dict[str, Any]]:
         """List tasks for a specific Paymo project with essential details only"""
+        # Convert parameters to proper types (MCP may pass strings)
+        project_id = int(project_id)
+
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
@@ -1269,6 +1358,9 @@ if MCP_AVAILABLE:
             task_id: Paymo task ID
             name: New name for the task
         """
+        # Convert parameters to proper types (MCP may pass strings)
+        task_id = int(task_id)
+
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
@@ -1291,6 +1383,9 @@ if MCP_AVAILABLE:
             name: Task name (e.g., "Document Review")
             billable: Whether task is billable (default: True)
         """
+        # Convert parameters to proper types (MCP may pass strings)
+        project_id = int(project_id)
+
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
@@ -1335,6 +1430,11 @@ if MCP_AVAILABLE:
             added_manually: Entry type - True for manual/form entry (default), False for timer-tracked
             timezone: IANA timezone for start/end times (default: America/Chicago)
         """
+        # Convert parameters to proper types (MCP may pass strings)
+        task_id = int(task_id)
+        if duration_hours is not None:
+            duration_hours = float(duration_hours)
+
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
@@ -1568,6 +1668,9 @@ if MCP_AVAILABLE:
         Returns:
             Path to exported CSV file
         """
+        # Convert parameters to proper types (MCP may pass strings)
+        invoice_id = int(invoice_id)
+
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
@@ -1612,6 +1715,9 @@ if MCP_AVAILABLE:
         Args:
             entry_id: The ID of the time entry to delete
         """
+        # Convert parameters to proper types (MCP may pass strings)
+        entry_id = int(entry_id)
+
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
@@ -1633,6 +1739,9 @@ if MCP_AVAILABLE:
             entry_id: The ID of the time entry
             billed: True to mark as billed, False to mark as unbilled (default: True)
         """
+        # Convert parameters to proper types (MCP may pass strings)
+        entry_id = int(entry_id)
+
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
