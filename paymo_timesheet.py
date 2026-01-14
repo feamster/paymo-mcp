@@ -1532,32 +1532,34 @@ if MCP_AVAILABLE:
     def export_paymo_timesheet(
         start_date: str,
         end_date: str,
-        project_id: Optional[int] = None,
-        format: str = "xls"
+        project_id: Optional[int] = None
     ) -> str:
         """
-        Export timesheet to XLS/CSV
+        Export timesheet to CSV file
 
         Args:
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
             project_id: Optional project filter
-            format: 'xls' or 'csv'
 
         Returns:
-            Path to exported file
+            Path to exported CSV file
         """
+        # Convert parameters to proper types (MCP may pass strings)
+        if project_id is not None:
+            project_id = int(project_id)
+
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
             raise ValueError("API key not configured")
 
         client = PaymoClient(api_key)
-        content = client.export_timesheet(start_date, end_date, format, project_id)
+        content = client.export_timesheet_csv(start_date, end_date, project_id)
 
         # Save to temp file
-        output_path = f"/tmp/paymo_timesheet_{start_date}_{end_date}.{format}"
-        with open(output_path, 'wb') as f:
+        output_path = f"/tmp/paymo_timesheet_{start_date}_{end_date}.csv"
+        with open(output_path, 'w') as f:
             f.write(content)
 
         return output_path
