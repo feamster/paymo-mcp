@@ -57,12 +57,20 @@ class PaymoClient:
             response = self.session.request(method, url, **kwargs)
 
             # Check rate limiting headers
+            # Note: Paymo may return multiple values like "4, 3" for different rate limit buckets
             remaining = response.headers.get('X-Ratelimit-Remaining')
             limit = response.headers.get('X-Ratelimit-Limit')
             decay = response.headers.get('X-Ratelimit-Decay-Period')
 
-            if remaining and int(remaining) < 5:
-                console.print(f"[yellow]⚠ Rate limit: {remaining}/{limit} remaining (resets in {decay}s)[/yellow]")
+            if remaining:
+                try:
+                    # Handle comma-separated values by taking the minimum
+                    remaining_values = [int(x.strip()) for x in remaining.split(',')]
+                    remaining_min = min(remaining_values)
+                    if remaining_min < 5:
+                        console.print(f"[yellow]⚠ Rate limit: {remaining}/{limit} remaining (resets in {decay}s)[/yellow]")
+                except ValueError:
+                    pass  # Ignore malformed rate limit headers
 
             response.raise_for_status()
             return response.json()
@@ -1199,7 +1207,7 @@ if MCP_AVAILABLE:
         billable: bool = True,
         flat_billing: bool = False,
         active: bool = True,
-        hourly_billing_mode: str = "project_rate",
+        hourly_billing_mode: str = "project",
         adjustable_hours: bool = True
     ) -> Dict[str, Any]:
         """
@@ -1213,13 +1221,19 @@ if MCP_AVAILABLE:
             billable: Whether project is billable (default: True)
             flat_billing: Use flat rate instead of hourly (default: False)
             active: Whether project is active (default: True)
-            hourly_billing_mode: Billing mode - "project_rate" or "task_rate" (default: "project_rate")
+            hourly_billing_mode: Billing mode - "project" or "task" (default: "project")
             adjustable_hours: Auto-adjust budget based on task budgets (default: True)
         """
         # Convert parameters to proper types (MCP may pass strings)
-        client_id = int(client_id)
+        try:
+            client_id = int(client_id)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid client_id '{client_id}': {e}")
         if price_per_hour is not None:
-            price_per_hour = float(price_per_hour)
+            try:
+                price_per_hour = float(price_per_hour)
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"Invalid price_per_hour '{price_per_hour}': {e}")
 
         config = load_config()
         api_key = config.get('api_key')
@@ -1278,13 +1292,19 @@ if MCP_AVAILABLE:
             billable: Whether project is billable
             flat_billing: Use flat rate instead of hourly
             active: Whether project is active
-            hourly_billing_mode: Billing mode - "project_rate" or "task_rate"
+            hourly_billing_mode: Billing mode - "project" or "task"
             adjust_price: Budget estimate adjusted automatically
         """
         # Convert parameters to proper types (MCP may pass strings)
-        project_id = int(project_id)
+        try:
+            project_id = int(project_id)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid project_id '{project_id}': {e}")
         if price_per_hour is not None:
-            price_per_hour = float(price_per_hour)
+            try:
+                price_per_hour = float(price_per_hour)
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"Invalid price_per_hour '{price_per_hour}': {e}")
 
         config = load_config()
         api_key = config.get('api_key')
