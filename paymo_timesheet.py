@@ -1535,7 +1535,7 @@ if MCP_AVAILABLE:
         project_id: Optional[int] = None
     ) -> str:
         """
-        Export timesheet to CSV file
+        Export timesheet as CSV content
 
         Args:
             start_date: Start date (YYYY-MM-DD)
@@ -1543,7 +1543,7 @@ if MCP_AVAILABLE:
             project_id: Optional project filter
 
         Returns:
-            Path to exported CSV file
+            CSV content as string (can be saved to file or displayed)
         """
         # Convert parameters to proper types (MCP may pass strings)
         if project_id is not None:
@@ -1555,14 +1555,7 @@ if MCP_AVAILABLE:
             raise ValueError("API key not configured")
 
         client = PaymoClient(api_key)
-        content = client.export_timesheet_csv(start_date, end_date, project_id)
-
-        # Save to temp file
-        output_path = f"/tmp/paymo_timesheet_{start_date}_{end_date}.csv"
-        with open(output_path, 'w') as f:
-            f.write(content)
-
-        return output_path
+        return client.export_timesheet_csv(start_date, end_date, project_id)
 
     @mcp.tool()
     def list_paymo_invoices(client_id: Optional[int] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1682,13 +1675,13 @@ if MCP_AVAILABLE:
     @mcp.tool()
     def export_invoice_timesheet(invoice_id: int) -> str:
         """
-        Export timesheet CSV for a specific invoice
+        Export timesheet CSV for entries on a specific invoice
 
         Args:
             invoice_id: Invoice ID to export
 
         Returns:
-            Path to exported CSV file
+            CSV content as string (can be saved to file or displayed)
         """
         # Convert parameters to proper types (MCP may pass strings)
         invoice_id = int(invoice_id)
@@ -1699,35 +1692,7 @@ if MCP_AVAILABLE:
             raise ValueError("API key not configured")
 
         client = PaymoClient(api_key)
-
-        # Get invoice
-        inv = client.get_invoice(invoice_id)
-        inv_number = inv.get('number', f'INV-{invoice_id}')
-        inv_date = inv.get('date', '')
-
-        # Calculate billing period
-        if inv_date:
-            from datetime import datetime
-            inv_dt = datetime.strptime(inv_date, '%Y-%m-%d')
-            start_date = inv_dt.replace(day=1).strftime('%Y-%m-%d')
-            end_date = inv_date
-        else:
-            from datetime import datetime
-            now = datetime.now()
-            start_date = now.replace(day=1).strftime('%Y-%m-%d')
-            end_date = now.strftime('%Y-%m-%d')
-
-        # Export - use invoice-specific method to get only entries on this invoice
-        csv_content = client.export_invoice_entries_csv(invoice_id)
-
-        # Save
-        filename = f"{inv_number.replace('#', '').replace('/', '-')}_timesheet.csv"
-        output_path = f"/tmp/{filename}"
-
-        with open(output_path, 'w') as f:
-            f.write(csv_content)
-
-        return output_path
+        return client.export_invoice_entries_csv(invoice_id)
 
     @mcp.tool()
     def delete_paymo_entry(entry_id: int) -> str:
