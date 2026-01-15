@@ -549,6 +549,142 @@ class PaymoClient:
 
         return None
 
+    def get_expenses(self, project_id: Optional[int] = None, client_id: Optional[int] = None,
+                    start_date: Optional[str] = None, end_date: Optional[str] = None,
+                    billed: Optional[bool] = None) -> List[Dict]:
+        """
+        List expenses with optional filters
+
+        Args:
+            project_id: Filter by project ID
+            client_id: Filter by client ID
+            start_date: Filter from date (YYYY-MM-DD)
+            end_date: Filter to date (YYYY-MM-DD)
+            billed: Filter by billed status (True=billed, False=unbilled, None=all)
+
+        Returns:
+            List of expenses
+        """
+        endpoint = "expenses"
+        filters = []
+
+        if project_id:
+            filters.append(f"project_id={project_id}")
+        if client_id:
+            filters.append(f"client_id={client_id}")
+        if start_date:
+            filters.append(f"date>={start_date}")
+        if end_date:
+            filters.append(f"date<={end_date}")
+        if billed is not None:
+            filters.append(f"billed={'true' if billed else 'false'}")
+
+        if filters:
+            endpoint += "?where=" + " and ".join(filters)
+
+        response = self._request('GET', endpoint)
+        return response.get('expenses', [])
+
+    def create_expense(self, project_id: int, amount: float, date: str,
+                      description: Optional[str] = None,
+                      expense_category_id: Optional[int] = None,
+                      billable: bool = True,
+                      file_path: Optional[str] = None) -> Dict:
+        """
+        Create a new expense entry
+
+        Args:
+            project_id: Project to attach expense to
+            amount: Expense amount
+            date: Date in YYYY-MM-DD format
+            description: Expense description
+            expense_category_id: Category ID (travel, meals, etc.)
+            billable: Whether expense is billable (default True)
+            file_path: Path to receipt image/PDF for upload
+
+        Returns:
+            Created expense with id, amount, date, description, billable, billed
+        """
+        data = {
+            'project_id': project_id,
+            'amount': amount,
+            'date': date,
+            'billable': billable
+        }
+
+        if description:
+            data['description'] = description
+        if expense_category_id:
+            data['expense_category_id'] = expense_category_id
+
+        if file_path:
+            # Handle file upload with multipart/form-data
+            import os
+            if not os.path.exists(file_path):
+                raise ValueError(f"File not found: {file_path}")
+
+            with open(file_path, 'rb') as f:
+                files = {'file': f}
+                # For file upload, send as form data instead of JSON
+                headers = {'Accept': 'application/json'}
+                url = f"{self.base_url}expenses"
+                response = self.session.post(url, data=data, files=files, headers=headers)
+
+                # Check rate limiting
+                remaining = response.headers.get('X-Ratelimit-Remaining')
+                limit = response.headers.get('X-Ratelimit-Limit')
+                decay = response.headers.get('X-Ratelimit-Decay-Period')
+                if remaining and int(remaining) < 5:
+                    console.print(f"[yellow]⚠ Rate limit: {remaining}/{limit} remaining (resets in {decay}s)[/yellow]")
+
+                response.raise_for_status()
+                return response.json().get('expenses', [response.json()])[0] if 'expenses' in response.json() else response.json()
+        else:
+            response = self._request('POST', 'expenses', json=data)
+            return response.get('expenses', [response])[0] if 'expenses' in response else response
+
+    def delete_expense(self, expense_id: int) -> Dict:
+        """
+        Delete an expense by ID
+
+        Args:
+            expense_id: Expense ID to delete
+
+        Returns:
+            Success confirmation
+        """
+        response = self._request('DELETE', f'expenses/{expense_id}')
+        return response
+
+    def update_expense(self, expense_id: int, **kwargs) -> Dict:
+        """
+        Update an expense (mark as billed, update amount, etc.)
+
+        Args:
+            expense_id: Expense ID
+            **kwargs: Fields to update (billed, amount, description, etc.)
+
+        Returns:
+            Updated expense
+        """
+        response = self._request('PUT', f'expenses/{expense_id}', json=kwargs)
+        return response.get('expenses', [response])[0] if 'expenses' in response else response
+
+    def get_expense_categories(self) -> List[Dict]:
+        """
+        List available expense categories
+
+        Returns:
+            List of categories with id, name
+        """
+        try:
+            response = self._request('GET', 'expensecategories')
+            return response.get('expensecategories', [])
+        except:
+            # Try with underscore if camelCase fails
+            response = self._request('GET', 'expense_categories')
+            return response.get('expense_categories', [])
+
 
 class TimesheetProcessor:
     """Process timesheet YAML and create Paymo entries"""
@@ -2022,6 +2158,256 @@ if MCP_AVAILABLE:
 
         # Sort by unbilled amount descending
         result.sort(key=lambda x: x['unbilled_amount'], reverse=True)
+
+        return result
+
+    @mcp.tool()
+    def list_paymo_expenses(
+        project_id: Optional[int] = None,
+        client_id: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        billed: Optional[bool] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        List expenses with optional filters
+
+        Args:
+            project_id: Filter by project ID
+            client_id: Filter by client ID
+            start_date: Filter from date (YYYY-MM-DD)
+            end_date: Filter to date (YYYY-MM-DD)
+            billed: Filter by billed status (True=billed, False=unbilled, None=all)
+
+        Returns:
+            List of expenses with id, project_name, client_name, date, amount, description, billed
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+
+        client = PaymoClient(api_key)
+        expenses = client.get_expenses(
+            project_id=project_id,
+            client_id=client_id,
+            start_date=start_date,
+            end_date=end_date,
+            billed=billed
+        )
+
+        # Enrich with project and client names
+        projects = {p['id']: p for p in client.get_projects()}
+        clients = {c['id']: c for c in client.get_clients()}
+
+        result = []
+        for expense in expenses:
+            project = projects.get(expense.get('project_id'), {})
+            client_obj = clients.get(project.get('client_id'), {})
+
+            result.append({
+                'id': expense.get('id'),
+                'project_name': project.get('name'),
+                'client_name': client_obj.get('name'),
+                'date': expense.get('date'),
+                'amount': expense.get('amount'),
+                'description': expense.get('description'),
+                'billable': expense.get('billable'),
+                'billed': expense.get('billed'),
+                'expense_category_id': expense.get('expense_category_id')
+            })
+
+        return result
+
+    @mcp.tool()
+    def create_paymo_expense(
+        project_id: int,
+        amount: float,
+        date: str,
+        description: Optional[str] = None,
+        expense_category_id: Optional[int] = None,
+        billable: bool = True,
+        file_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a new expense entry
+
+        Args:
+            project_id: Project to attach expense to
+            amount: Expense amount (decimal number)
+            date: Date in YYYY-MM-DD format
+            description: Expense description
+            expense_category_id: Category ID (use list_expense_categories to see options)
+            billable: Whether expense is billable (default True)
+            file_path: Optional path to receipt image/PDF for upload
+
+        Returns:
+            Created expense with id, amount, date, description, billable, billed
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+
+        client = PaymoClient(api_key)
+        expense = client.create_expense(
+            project_id=project_id,
+            amount=amount,
+            date=date,
+            description=description,
+            expense_category_id=expense_category_id,
+            billable=billable,
+            file_path=file_path
+        )
+
+        return {
+            'id': expense.get('id'),
+            'project_id': expense.get('project_id'),
+            'amount': expense.get('amount'),
+            'date': expense.get('date'),
+            'description': expense.get('description'),
+            'billable': expense.get('billable'),
+            'billed': expense.get('billed'),
+            'expense_category_id': expense.get('expense_category_id')
+        }
+
+    @mcp.tool()
+    def delete_paymo_expense(expense_id: int) -> Dict[str, str]:
+        """
+        Delete an expense by ID
+
+        Args:
+            expense_id: Expense ID to delete
+
+        Returns:
+            Success confirmation
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+
+        client = PaymoClient(api_key)
+        client.delete_expense(expense_id)
+
+        return {'status': 'success', 'message': f'Expense {expense_id} deleted'}
+
+    @mcp.tool()
+    def mark_paymo_expense_billed(expense_id: int, billed: bool = True) -> Dict[str, Any]:
+        """
+        Mark an expense as billed or unbilled
+
+        Args:
+            expense_id: Expense ID
+            billed: Billed status (default True)
+
+        Returns:
+            Updated expense
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+
+        client = PaymoClient(api_key)
+        expense = client.update_expense(expense_id, billed=billed)
+
+        return {
+            'id': expense.get('id'),
+            'amount': expense.get('amount'),
+            'date': expense.get('date'),
+            'description': expense.get('description'),
+            'billed': expense.get('billed')
+        }
+
+    @mcp.tool()
+    def list_expense_categories() -> List[Dict[str, Any]]:
+        """
+        List available expense categories
+
+        Returns:
+            List of categories with id and name
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+
+        client = PaymoClient(api_key)
+        categories = client.get_expense_categories()
+
+        return [
+            {
+                'id': cat.get('id'),
+                'name': cat.get('name')
+            }
+            for cat in categories
+        ]
+
+    @mcp.tool()
+    def get_unbilled_expenses_summary(
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get unbilled expenses summary by project (mirrors get_unbilled_summary for time entries)
+
+        Args:
+            start_date: Optional start date (YYYY-MM-DD), defaults to 60 days ago
+            end_date: Optional end date (YYYY-MM-DD), defaults to tomorrow
+
+        Returns:
+            List of projects with unbilled_expense_count and unbilled_expense_total
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+
+        client = PaymoClient(api_key)
+
+        # Default date range: last 60 days to tomorrow
+        from datetime import datetime, timedelta
+        if not start_date:
+            start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
+        if not end_date:
+            end_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+
+        # Get all projects
+        projects = {p['id']: p for p in client.get_projects()}
+        clients = {c['id']: c for c in client.get_clients()}
+
+        # Get unbilled expenses
+        all_expenses = client.get_expenses(start_date=start_date, end_date=end_date, billed=False)
+
+        # Aggregate by project
+        project_summary = {}
+        for expense in all_expenses:
+            project_id = expense.get('project_id')
+            if project_id not in project_summary:
+                project_summary[project_id] = {
+                    'count': 0,
+                    'total': 0.0
+                }
+            project_summary[project_id]['count'] += 1
+            project_summary[project_id]['total'] += float(expense.get('amount', 0))
+
+        # Build result
+        result = []
+        for project_id, summary in project_summary.items():
+            project = projects.get(project_id, {})
+            client_obj = clients.get(project.get('client_id'), {})
+
+            result.append({
+                'project_id': project_id,
+                'project_name': project.get('name'),
+                'client_name': client_obj.get('name'),
+                'unbilled_expense_count': summary['count'],
+                'unbilled_expense_total': round(summary['total'], 2)
+            })
+
+        # Sort by unbilled total descending
+        result.sort(key=lambda x: x['unbilled_expense_total'], reverse=True)
 
         return result
 
