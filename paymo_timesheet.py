@@ -278,7 +278,9 @@ class PaymoClient:
         invoice_item_ids = set(item.get('id') for item in invoice_items if item.get('id'))
 
         if not invoice_item_ids:
-            # Build header based on included columns
+            # Build header based on included columns using csv writer
+            output = io.StringIO()
+            writer = csv.writer(output, quoting=csv.QUOTE_ALL)
             header_parts = []
             if include_date:
                 header_parts.append('Date')
@@ -287,7 +289,8 @@ class PaymoClient:
             if include_end_time:
                 header_parts.append('End Time')
             header_parts.extend(['Duration (hours)', 'Task', 'Description', 'Billed', 'Entry ID'])
-            return ','.join(header_parts) + '\n'
+            writer.writerow(header_parts)
+            return output.getvalue()
 
         # Get all entries and filter by invoice_item_id
         # We need to fetch entries to check their invoice_item_id
@@ -350,9 +353,9 @@ class PaymoClient:
                     console.print(f"Warning: Failed to fetch task {task_id}: {e}")
                     task_cache[task_id] = ''
 
-        # Create CSV
+        # Create CSV with QUOTE_ALL for maximum compatibility
         output = io.StringIO()
-        writer = csv.writer(output)
+        writer = csv.writer(output, quoting=csv.QUOTE_ALL)
 
         # Header - build based on included columns
         header = []
@@ -477,9 +480,9 @@ class PaymoClient:
                     console.print(f"Warning: Failed to fetch task {task_id}: {e}")
                     task_cache[task_id] = ''
 
-        # Create CSV
+        # Create CSV with QUOTE_ALL for maximum compatibility
         output = io.StringIO()
-        writer = csv.writer(output)
+        writer = csv.writer(output, quoting=csv.QUOTE_ALL)
 
         # Header
         writer.writerow(['Date', 'Start Time', 'End Time', 'Duration (hours)',
@@ -1409,6 +1412,7 @@ if MCP_AVAILABLE:
     def update_paymo_project(
         project_id: int,
         name: Optional[str] = None,
+        client_id: Optional[int] = None,
         code: Optional[str] = None,
         price_per_hour: Optional[float] = None,
         billable: Optional[bool] = None,
@@ -1423,6 +1427,7 @@ if MCP_AVAILABLE:
         Args:
             project_id: Paymo project ID
             name: Project name
+            client_id: Change the client assigned to this project
             code: Short project code
             price_per_hour: Hourly billing rate
             billable: Whether project is billable
@@ -1436,6 +1441,11 @@ if MCP_AVAILABLE:
             project_id = int(project_id)
         except (ValueError, TypeError) as e:
             raise ValueError(f"Invalid project_id '{project_id}': {e}")
+        if client_id is not None:
+            try:
+                client_id = int(client_id)
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"Invalid client_id '{client_id}': {e}")
         if price_per_hour is not None:
             try:
                 price_per_hour = float(price_per_hour)
@@ -1453,6 +1463,8 @@ if MCP_AVAILABLE:
         payload = {}
         if name is not None:
             payload['name'] = name
+        if client_id is not None:
+            payload['client_id'] = client_id
         if code is not None:
             payload['code'] = code
         if price_per_hour is not None:
