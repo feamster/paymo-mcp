@@ -527,6 +527,240 @@ class PaymoClient:
 
         return output.getvalue()
 
+    def export_invoice_paymo_format(self, invoice_number: str, strict: bool = True,
+                                     tolerance: float = 0.05) -> str:
+        """
+        Export timesheet in EXACT Paymo export format with all standard columns.
+
+        Columns match Paymo's native export:
+        User, Internal User Id, Project, Internal Project Id, Project Description,
+        Tasklist, Internal Tasklist Id, Task, Internal Task Id, Start Time, End Time,
+        Worked Time, Decimal Hours, Time In Seconds
+
+        Args:
+            invoice_number: Invoice number (e.g., 'INV-20260331-241')
+            strict: If True (default), validate totals match invoice
+            tolerance: Allowed percentage difference for validation (default 5%)
+
+        Returns:
+            CSV content in exact Paymo format
+        """
+        import csv
+        import io
+        import html
+        import re
+        import time
+
+        # Find invoice by number
+        invoice = self.find_invoice_by_number(invoice_number)
+        if not invoice:
+            raise ValueError(f"Invoice not found: {invoice_number}")
+
+        invoice_id = invoice.get('id')
+
+        # Get invoice with items
+        response = self._request('GET', f'invoices/{invoice_id}?include=invoiceitems')
+        invoice = response.get('invoices', [{}])[0]
+        invoice_items = invoice.get('invoiceitems', [])
+
+        # Get invoice item IDs
+        invoice_item_ids = set(item.get('id') for item in invoice_items if item.get('id'))
+
+        # Get entries for this invoice
+        inv_date = invoice.get('date', '')
+        if inv_date:
+            inv_dt = datetime.strptime(inv_date, '%Y-%m-%d')
+            start_date = (inv_dt - timedelta(days=90)).strftime('%Y-%m-%d')
+            end_date = inv_date
+        else:
+            now = datetime.now()
+            start_date = (now - timedelta(days=90)).strftime('%Y-%m-%d')
+            end_date = now.strftime('%Y-%m-%d')
+
+        all_entries = self.get_entries(start_date, end_date)
+        entries = [e for e in all_entries if e.get('invoice_item_id') in invoice_item_ids]
+
+        # Sort entries by date and time (chronological in local timezone)
+        def get_entry_sort_key(entry):
+            entry_date = entry.get('date', '')
+            if not entry_date and entry.get('start_time'):
+                entry_date = entry.get('start_time', '')[:10]
+            start_time_sort = '00:00'
+            if entry.get('start_time'):
+                try:
+                    start_dt = dateparser.parse(entry.get('start_time'))
+                    if start_dt:
+                        local_tz = pytz.timezone('America/Chicago')
+                        if start_dt.tzinfo:
+                            start_local = start_dt.astimezone(local_tz)
+                        else:
+                            start_local = local_tz.localize(start_dt)
+                        start_time_sort = start_local.strftime('%H:%M')
+                except Exception:
+                    pass
+            return (entry_date, start_time_sort)
+
+        entries.sort(key=get_entry_sort_key)
+
+        # Build caches for tasks, projects, tasklists, users
+        task_cache = {}
+        project_cache = {}
+        tasklist_cache = {}
+        user_cache = {}
+
+        unique_task_ids = set(e.get('task_id') for e in entries if e.get('task_id'))
+        unique_project_ids = set(e.get('project_id') for e in entries if e.get('project_id'))
+        unique_user_ids = set(e.get('user_id') for e in entries if e.get('user_id'))
+
+        # Fetch projects
+        try:
+            projects = self.get_projects(active_only=False)
+            for p in projects:
+                project_cache[p.get('id')] = p
+        except Exception:
+            pass
+
+        # Fetch tasks (and get tasklist info)
+        for task_id in unique_task_ids:
+            try:
+                time.sleep(2)
+                task_response = self._request('GET', f'tasks/{task_id}')
+                task_data = task_response.get('tasks', [{}])[0] if 'tasks' in task_response else {}
+                task_cache[task_id] = task_data
+
+                # Get tasklist if not cached
+                tasklist_id = task_data.get('tasklist_id')
+                if tasklist_id and tasklist_id not in tasklist_cache:
+                    try:
+                        tl_response = self._request('GET', f'tasklists/{tasklist_id}')
+                        tl_data = tl_response.get('tasklists', [{}])[0] if 'tasklists' in tl_response else {}
+                        tasklist_cache[tasklist_id] = tl_data
+                    except Exception:
+                        tasklist_cache[tasklist_id] = {}
+            except Exception as e:
+                if '429' in str(e):
+                    time.sleep(6)
+                    try:
+                        task_response = self._request('GET', f'tasks/{task_id}')
+                        task_data = task_response.get('tasks', [{}])[0] if 'tasks' in task_response else {}
+                        task_cache[task_id] = task_data
+                    except Exception:
+                        task_cache[task_id] = {}
+                else:
+                    task_cache[task_id] = {}
+
+        # Fetch users
+        for user_id in unique_user_ids:
+            try:
+                time.sleep(1)
+                user_response = self._request('GET', f'users/{user_id}')
+                user_data = user_response.get('users', [{}])[0] if 'users' in user_response else {}
+                user_cache[user_id] = user_data
+            except Exception:
+                user_cache[user_id] = {}
+
+        # Calculate total hours for validation
+        total_hours = 0
+        for entry in entries:
+            if entry.get('duration'):
+                total_hours += entry['duration'] / 3600
+            elif entry.get('start_time') and entry.get('end_time'):
+                start = dateparser.parse(entry.get('start_time', ''))
+                end = dateparser.parse(entry.get('end_time', ''))
+                if start and end:
+                    total_hours += (end - start).total_seconds() / 3600
+
+        # Get hourly rate from first project for validation
+        hourly_rate = 0
+        if entries and entries[0].get('project_id'):
+            proj = project_cache.get(entries[0].get('project_id'), {})
+            hourly_rate = proj.get('price_per_hour', 0) or 0
+
+        # Strict validation
+        invoice_total = invoice.get('total', 0)
+        calculated_fees = total_hours * hourly_rate if hourly_rate else 0
+
+        if strict and hourly_rate and invoice_total > 0:
+            fee_ratio = calculated_fees / invoice_total if invoice_total else 0
+            if fee_ratio < (1 - tolerance) or calculated_fees > invoice_total * (1 + tolerance):
+                raise ValueError(
+                    f"Invoice total mismatch: calculated fees ${calculated_fees:,.2f} "
+                    f"({total_hours:.2f} hrs × ${hourly_rate}/hr) vs invoice total ${invoice_total:,.2f}. "
+                    f"Use export_paymo_timesheet(start_date, end_date) for date-range export instead."
+                )
+
+        # Build CSV output in Paymo format
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Header - exact Paymo format
+        writer.writerow([
+            'User', 'Internal User Id', 'Project', 'Internal Project Id',
+            'Project Description', 'Tasklist', 'Internal Tasklist Id',
+            'Task', 'Internal Task Id', 'Start Time', 'End Time',
+            'Worked Time', 'Decimal Hours', 'Time In Seconds'
+        ])
+
+        # Data rows
+        for entry in entries:
+            user_id = entry.get('user_id')
+            user = user_cache.get(user_id, {})
+            user_name = user.get('name', '')
+
+            project_id = entry.get('project_id')
+            project = project_cache.get(project_id, {})
+            project_name = project.get('name', '')
+            project_description = project.get('description', '') or ''
+
+            task_id = entry.get('task_id')
+            task = task_cache.get(task_id, {})
+            task_name = task.get('name', '')
+            tasklist_id = task.get('tasklist_id')
+
+            tasklist = tasklist_cache.get(tasklist_id, {})
+            tasklist_name = tasklist.get('name', '')
+
+            # Times
+            start_time = entry.get('start_time', '')
+            end_time = entry.get('end_time', '')
+
+            # Duration calculations
+            if entry.get('duration'):
+                time_in_seconds = entry['duration']
+            elif start_time and end_time:
+                start_dt = dateparser.parse(start_time)
+                end_dt = dateparser.parse(end_time)
+                time_in_seconds = int((end_dt - start_dt).total_seconds()) if start_dt and end_dt else 0
+            else:
+                time_in_seconds = 0
+
+            decimal_hours = time_in_seconds / 3600
+
+            # Worked time as HH:MM:SS
+            hours = int(time_in_seconds // 3600)
+            minutes = int((time_in_seconds % 3600) // 60)
+            seconds = int(time_in_seconds % 60)
+            worked_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+            writer.writerow([
+                user_name,
+                user_id or '',
+                project_name,
+                project_id or '',
+                project_description,
+                tasklist_name,
+                tasklist_id or '',
+                task_name,
+                task_id or '',
+                start_time,
+                end_time,
+                worked_time,
+                f"{decimal_hours:.2f}",
+                time_in_seconds
+            ])
+
+        return output.getvalue()
+
     def export_timesheet_csv(self, start_date: str, end_date: str,
                             project_id: Optional[int] = None) -> str:
         """
@@ -1856,6 +2090,45 @@ if MCP_AVAILABLE:
 
         client = PaymoClient(api_key)
         return client.export_invoice_formatted(invoice_number, strict=strict)
+
+    @mcp.tool()
+    def export_invoice_paymo_format(invoice_number: str, strict: bool = True) -> str:
+        """
+        Export timesheet in EXACT Paymo native format with all standard columns.
+
+        WHEN TO USE THIS TOOL:
+        - User asks for "Paymo format" or "native Paymo export"
+        - User needs the export to match Paymo's own export format exactly
+        - User wants all internal IDs (user, project, task, tasklist)
+        - User is importing into another system that expects Paymo format
+
+        WHEN TO USE export_invoice_timesheet() INSTEAD:
+        - User wants a clean, billing-ready format with summary header
+        - User wants simple Date, Time, Duration, Task, Description columns
+        - Default choice for invoice timesheets
+
+        OUTPUT FORMAT (exact Paymo columns):
+        User, Internal User Id, Project, Internal Project Id, Project Description,
+        Tasklist, Internal Tasklist Id, Task, Internal Task Id, Start Time, End Time,
+        Worked Time, Decimal Hours, Time In Seconds
+
+        Args:
+            invoice_number: Invoice number string (e.g., 'INV-20260331-241')
+            strict: If True (default), validate totals match invoice.
+
+        Returns:
+            CSV content in exact Paymo export format.
+
+        Example:
+            export_invoice_paymo_format("INV-20260331-241")
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+        return client.export_invoice_paymo_format(invoice_number, strict=strict)
 
     @mcp.tool()
     def delete_paymo_entry(entry_id: int) -> str:

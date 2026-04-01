@@ -241,6 +241,30 @@ export_invoice_timesheet("INV-20260331-241", False)    # skip validation
 
 **If validation fails:** Use `export_paymo_timesheet(start_date, end_date, project_id)` to export by date range instead.
 
+#### `export_invoice_paymo_format(invoice_number: str, strict: bool = True)`
+Export timesheet in **exact Paymo native format** with all standard columns. Use this when you need the export to match Paymo's own export format exactly.
+
+**Args:**
+- `invoice_number` (str): The invoice number (e.g., "INV-20260331-241")
+- `strict` (bool): If True (default), validate totals match invoice
+
+**Returns:** CSV with exact Paymo columns:
+```
+User, Internal User Id, Project, Internal Project Id, Project Description,
+Tasklist, Internal Tasklist Id, Task, Internal Task Id, Start Time, End Time,
+Worked Time, Decimal Hours, Time In Seconds
+```
+
+**When to use:**
+- Need exact Paymo format for import into another system
+- Need all internal IDs (user, project, task, tasklist)
+- User explicitly asks for "Paymo format"
+
+**Example:**
+```python
+export_invoice_paymo_format("INV-20260331-241")
+```
+
 #### `export_paymo_timesheet(start_date, end_date, project_id=None, format="csv")`
 Export timesheet for a date range.
 
