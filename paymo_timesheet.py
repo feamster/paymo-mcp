@@ -227,6 +227,27 @@ class PaymoClient:
         response = self._request('GET', f'invoices/{invoice_id}')
         return response.get('invoices', [{}])[0]
 
+    def find_invoice_by_number(self, invoice_number: str) -> Optional[Dict]:
+        """
+        Find invoice by its number (e.g., 'INV-20260331-241' or '#INV-20260331-241')
+
+        Args:
+            invoice_number: The invoice number to search for (with or without # prefix)
+
+        Returns:
+            Invoice dict if found, None otherwise
+        """
+        invoices = self.get_invoices()
+
+        # Normalize: strip # prefix if present for comparison
+        search_num = invoice_number.lstrip('#')
+
+        for inv in invoices:
+            inv_num = inv.get('number', '').lstrip('#')
+            if inv_num == search_num:
+                return inv
+        return None
+
     def get_outstanding_invoices_last_week(self) -> List[Dict]:
         """Get outstanding invoices (sent or viewed) from the last 7 days"""
         from datetime import datetime, timedelta
@@ -248,26 +269,46 @@ class PaymoClient:
 
         return outstanding
 
-    def export_invoice_entries_csv(self, invoice_id: int,
-                                     include_date: bool = True,
-                                     include_start_time: bool = True,
-                                     include_end_time: bool = True) -> str:
+
+    def export_invoice_formatted(self, invoice_number: str, strict: bool = True,
+                                   tolerance: float = 0.05) -> str:
         """
-        Export CSV of entries that are actually on a specific invoice
+        Export a formatted timesheet for an invoice, matching the standard billing format.
+
+        This produces a clean CSV with:
+        - Header section: Matter, Invoice, Period, Total Hours, Fees, Expenses, Total Due
+        - Data section: Date, Start Time (HH:MM), End Time (HH:MM), Duration, Task, Description
+        - Entries sorted by date (chronological order)
+        - Footer with expenses
+
+        STRICT MATCHING (default): Only includes time entries explicitly linked to this
+        invoice via invoice_item_id. Validates that calculated totals match invoice totals.
+        If entries don't match, raises an error suggesting to use date-range export instead.
 
         Args:
-            invoice_id: Invoice ID
-            include_date: Include date column (default True)
-            include_start_time: Include start time column (default True)
-            include_end_time: Include end time column (default True)
+            invoice_number: Invoice number (e.g., 'INV-20260331-241')
+            strict: If True (default), validate totals match and error if they don't.
+                   If False, export whatever entries are linked without validation.
+            tolerance: Allowed percentage difference for strict validation (default 5%)
 
         Returns:
-            CSV content as string
+            Formatted CSV content as string
+
+        Raises:
+            ValueError: If invoice not found, or if strict=True and totals don't match
         """
         import csv
         import io
         import html
+        import re
         import time
+
+        # Find invoice by number
+        invoice = self.find_invoice_by_number(invoice_number)
+        if not invoice:
+            raise ValueError(f"Invoice not found: {invoice_number}")
+
+        invoice_id = invoice.get('id')
 
         # Get invoice with items
         response = self._request('GET', f'invoices/{invoice_id}?include=invoiceitems')
@@ -277,109 +318,155 @@ class PaymoClient:
         # Get invoice item IDs
         invoice_item_ids = set(item.get('id') for item in invoice_items if item.get('id'))
 
-        if not invoice_item_ids:
-            # Build header based on included columns
-            header_parts = []
-            if include_date:
-                header_parts.append('Date')
-            if include_start_time:
-                header_parts.append('Start Time')
-            if include_end_time:
-                header_parts.append('End Time')
-            header_parts.extend(['Duration (hours)', 'Task', 'Description', 'Billed', 'Entry ID'])
-            return ','.join(header_parts) + '\n'
-
-        # Get all entries and filter by invoice_item_id
-        # We need to fetch entries to check their invoice_item_id
-        # Use a broad date range - go back 3 months from invoice date to catch all entries
+        # Get entries for this invoice
         inv_date = invoice.get('date', '')
         if inv_date:
-            from datetime import datetime, timedelta
             inv_dt = datetime.strptime(inv_date, '%Y-%m-%d')
-            # Get entries from 90 days before invoice to invoice date
             start_date = (inv_dt - timedelta(days=90)).strftime('%Y-%m-%d')
             end_date = inv_date
         else:
-            # Fallback - get last 90 days
-            from datetime import datetime, timedelta
             now = datetime.now()
             start_date = (now - timedelta(days=90)).strftime('%Y-%m-%d')
             end_date = now.strftime('%Y-%m-%d')
 
         all_entries = self.get_entries(start_date, end_date)
-
-        # Filter to only entries on this invoice
         entries = [e for e in all_entries if e.get('invoice_item_id') in invoice_item_ids]
 
-        # Sort entries by start date (earliest first)
+        # Sort entries by date and time (chronological in local timezone)
         def get_entry_sort_key(entry):
-            # Use start_time if available, otherwise use date
+            # Get the date
+            entry_date = entry.get('date', '')
+            if not entry_date and entry.get('start_time'):
+                entry_date = entry.get('start_time', '')[:10]
+
+            # Get start time in local timezone for proper sorting
+            start_time_sort = '00:00'
             if entry.get('start_time'):
-                return entry.get('start_time')
-            elif entry.get('date'):
-                return entry.get('date')
-            else:
-                # Fallback to entry ID if no date info
-                return str(entry.get('id', 0)).zfill(20)
+                try:
+                    start_dt = dateparser.parse(entry.get('start_time'))
+                    if start_dt:
+                        local_tz = pytz.timezone('America/Chicago')
+                        if start_dt.tzinfo:
+                            start_local = start_dt.astimezone(local_tz)
+                        else:
+                            start_local = local_tz.localize(start_dt)
+                        start_time_sort = start_local.strftime('%H:%M')
+                except Exception:
+                    pass
+
+            return (entry_date, start_time_sort)
 
         entries.sort(key=get_entry_sort_key)
 
-        # Build task cache - fetch all unique tasks upfront
+        # Build task cache
         task_cache = {}
         unique_task_ids = set(e.get('task_id') for e in entries if e.get('task_id'))
 
         for task_id in unique_task_ids:
             try:
-                time.sleep(2)  # 2 second delay to avoid rate limits
+                time.sleep(2)
                 task_response = self._request('GET', f'tasks/{task_id}')
                 task_data = task_response.get('tasks', [{}])[0] if 'tasks' in task_response else {}
                 task_cache[task_id] = task_data.get('name', '')
             except Exception as e:
-                # If we hit a rate limit, wait and retry once
                 if '429' in str(e):
-                    console.print(f"Rate limit hit, waiting 6 seconds...")
                     time.sleep(6)
                     try:
                         task_response = self._request('GET', f'tasks/{task_id}')
                         task_data = task_response.get('tasks', [{}])[0] if 'tasks' in task_response else {}
                         task_cache[task_id] = task_data.get('name', '')
-                    except Exception as retry_err:
-                        console.print(f"Warning: Failed to fetch task {task_id} after retry: {retry_err}")
+                    except Exception:
                         task_cache[task_id] = ''
                 else:
-                    console.print(f"Warning: Failed to fetch task {task_id}: {e}")
                     task_cache[task_id] = ''
 
-        # Create CSV
+        # Calculate totals and date range
+        total_hours = 0
+        earliest_date = None
+        latest_date = None
+
+        for entry in entries:
+            if entry.get('duration'):
+                total_hours += entry['duration'] / 3600
+            elif entry.get('start_time') and entry.get('end_time'):
+                start = dateparser.parse(entry.get('start_time', ''))
+                end = dateparser.parse(entry.get('end_time', ''))
+                if start and end:
+                    total_hours += (end - start).total_seconds() / 3600
+
+            entry_date_str = entry.get('date') or (entry.get('start_time', '')[:10] if entry.get('start_time') else '')
+            if entry_date_str:
+                if not earliest_date or entry_date_str < earliest_date:
+                    earliest_date = entry_date_str
+                if not latest_date or entry_date_str > latest_date:
+                    latest_date = entry_date_str
+
+        # Get matter name and hourly rate from project (first entry's project)
+        matter_name = ''
+        hourly_rate = 0
+        if entries:
+            project_id = entries[0].get('project_id')
+            if project_id:
+                try:
+                    projects = self.get_projects(active_only=False)
+                    for p in projects:
+                        if p.get('id') == project_id:
+                            matter_name = p.get('name', '')
+                            hourly_rate = p.get('price_per_hour', 0) or 0
+                            break
+                except Exception:
+                    pass
+
+        # Get invoice financial info
+        # Calculate fees from hours × rate, expenses = total - fees
+        invoice_total = invoice.get('total', 0)
+        calculated_fees = total_hours * hourly_rate if hourly_rate else 0
+
+        # Strict validation: check that calculated fees are close to invoice total
+        if strict and hourly_rate and invoice_total > 0:
+            # Allow for expenses (total - fees) and small rounding differences
+            # The calculated fees should be <= invoice total (fees + expenses = total)
+            # And should be within tolerance of invoice total (expenses shouldn't be huge)
+            fee_ratio = calculated_fees / invoice_total if invoice_total else 0
+
+            if fee_ratio < (1 - tolerance) or calculated_fees > invoice_total * (1 + tolerance):
+                raise ValueError(
+                    f"Invoice total mismatch: calculated fees ${calculated_fees:,.2f} "
+                    f"({total_hours:.2f} hrs × ${hourly_rate}/hr) vs invoice total ${invoice_total:,.2f}. "
+                    f"This may indicate entries are on a different invoice or billing period. "
+                    f"Use export_paymo_timesheet(start_date, end_date) for date-range export instead."
+                )
+
+        fees = calculated_fees if calculated_fees > 0 else invoice_total
+        expenses = invoice_total - fees if invoice_total > fees else 0
+
+        # Build CSV output
         output = io.StringIO()
         writer = csv.writer(output)
 
-        # Header - build based on included columns
-        header = []
-        if include_date:
-            header.append('Date')
-        if include_start_time:
-            header.append('Start Time')
-        if include_end_time:
-            header.append('End Time')
-        header.extend(['Duration (hours)', 'Task', 'Description', 'Billed', 'Entry ID'])
-        writer.writerow(header)
+        # Header section
+        writer.writerow(['Matter', matter_name])
+        writer.writerow(['Invoice', invoice_number])
+        writer.writerow(['Period', f"{earliest_date or 'N/A'} to {latest_date or 'N/A'}"])
+        writer.writerow(['Total Hours', f"{total_hours:.2f}"])
+        writer.writerow(['Fees', f"${fees:,.2f}"])
+        writer.writerow(['Expenses', f"${expenses:,.2f}"])
+        writer.writerow(['Total Due', f"${invoice_total:,.2f}"])
+        writer.writerow([])  # Blank line
 
-        # Rows
+        # Data header
+        writer.writerow(['Date', 'Start Time', 'End Time', 'Duration (hours)', 'Task', 'Description'])
+
+        # Data rows
         for entry in entries:
-            # Get task name from cache
             task_id = entry.get('task_id')
             task_name = task_cache.get(task_id, '') if task_id else ''
 
-            # Clean description (strip HTML tags and decode entities)
+            # Clean description
             description = entry.get('description', '')
             if description:
-                # Remove HTML tags
-                import re
                 description = re.sub(r'<[^>]+>', '', description)
-                # Decode HTML entities
-                description = html.unescape(description)
-                description = description.strip()
+                description = html.unescape(description).strip()
 
             # Calculate duration
             if entry.get('duration'):
@@ -389,27 +476,54 @@ class PaymoClient:
                 end = dateparser.parse(entry.get('end_time', ''))
                 duration_hours = (end - start).total_seconds() / 3600 if start and end else 0
 
-            # Extract date from start_time if date field is empty
+            # Extract date
             entry_date = entry.get('date', '')
             if not entry_date and entry.get('start_time'):
                 entry_date = entry.get('start_time', '')[:10]
 
-            # Build row based on included columns
-            row = []
-            if include_date:
-                row.append(entry_date)
-            if include_start_time:
-                row.append(entry.get('start_time', ''))
-            if include_end_time:
-                row.append(entry.get('end_time', ''))
-            row.extend([
+            # Format times as HH:MM (local time, extracted from ISO)
+            start_time_str = ''
+            end_time_str = ''
+
+            if entry.get('start_time'):
+                try:
+                    start_dt = dateparser.parse(entry.get('start_time'))
+                    if start_dt:
+                        # Convert to local timezone
+                        local_tz = pytz.timezone('America/Chicago')
+                        if start_dt.tzinfo:
+                            start_local = start_dt.astimezone(local_tz)
+                        else:
+                            start_local = local_tz.localize(start_dt)
+                        start_time_str = start_local.strftime('%H:%M')
+                except Exception:
+                    pass
+
+            if entry.get('end_time'):
+                try:
+                    end_dt = dateparser.parse(entry.get('end_time'))
+                    if end_dt:
+                        local_tz = pytz.timezone('America/Chicago')
+                        if end_dt.tzinfo:
+                            end_local = end_dt.astimezone(local_tz)
+                        else:
+                            end_local = local_tz.localize(end_dt)
+                        end_time_str = end_local.strftime('%H:%M')
+                except Exception:
+                    pass
+
+            writer.writerow([
+                entry_date,
+                start_time_str,
+                end_time_str,
                 f"{duration_hours:.2f}",
                 task_name,
-                description,
-                'Yes' if entry.get('billed') else 'No',
-                entry.get('id', '')
+                description
             ])
-            writer.writerow(row)
+
+        # Footer
+        writer.writerow([])  # Blank line
+        writer.writerow(['Expenses', f"${expenses:,.2f}"])
 
         return output.getvalue()
 
@@ -1535,15 +1649,32 @@ if MCP_AVAILABLE:
         project_id: Optional[int] = None
     ) -> str:
         """
-        Export timesheet as CSV content
+        Export timesheet by DATE RANGE as CSV. Use this as a fallback when
+        export_invoice_timesheet() fails or when you need entries by date
+        regardless of invoice linkage.
+
+        WHEN TO USE THIS TOOL:
+        - User asks for "timesheet for March" or "entries from last month"
+        - User needs entries by date range, not by invoice
+        - export_invoice_timesheet() failed validation (entries on different invoice)
+        - User wants ALL entries in a period, regardless of billing status
+
+        WHEN TO USE export_invoice_timesheet() INSTEAD:
+        - User asks for "timesheet for invoice X" or "INV-..."
+        - User wants only entries billed on a specific invoice
 
         Args:
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
-            project_id: Optional project filter
+            project_id: Optional - filter to specific project ID
 
         Returns:
-            CSV content as string (can be saved to file or displayed)
+            CSV content with columns: Date, Start Time, End Time, Duration (hours),
+            Task, Description, Billed, Entry ID
+
+        Example:
+            export_paymo_timesheet("2026-03-01", "2026-03-31")
+            export_paymo_timesheet("2026-03-01", "2026-03-31", project_id=12345)
         """
         # Convert parameters to proper types (MCP may pass strings)
         if project_id is not None:
@@ -1673,26 +1804,58 @@ if MCP_AVAILABLE:
         return client.get_outstanding_invoices_last_week()
 
     @mcp.tool()
-    def export_invoice_timesheet(invoice_id: int) -> str:
+    def export_invoice_timesheet(invoice_number: str, strict: bool = True) -> str:
         """
-        Export timesheet CSV for entries on a specific invoice
+        Export a formatted timesheet CSV for an invoice. This is the PRIMARY tool for
+        generating invoice timesheets.
+
+        WHEN TO USE THIS TOOL:
+        - User asks to "export timesheet for invoice X"
+        - User asks to "generate a timesheet for INV-..."
+        - User asks to "get the timesheet for invoice number ..."
+        - User wants a billing-ready timesheet with Matter, Period, Hours, Fees summary
+
+        STRICT MATCHING (default):
+        Only exports entries explicitly linked to this invoice. Validates that the
+        calculated total (hours × rate) matches the invoice total within 5%.
+        If validation fails, raises an error suggesting export_paymo_timesheet() instead.
+
+        This ensures you get EXACTLY the entries billed on that specific invoice,
+        not entries that happen to fall within a date range.
+
+        OUTPUT FORMAT:
+        The CSV includes:
+        - Header: Matter name, Invoice number, Period, Total Hours, Fees, Expenses, Total Due
+        - Data: Date, Start Time (HH:MM), End Time (HH:MM), Duration, Task, Description
+        - Entries sorted chronologically (earliest first)
+        - Footer with expenses
 
         Args:
-            invoice_id: Invoice ID to export
+            invoice_number: Invoice number string (e.g., 'INV-20260331-241')
+                           This is the invoice NUMBER, not the internal ID.
+                           Users see this number on their invoices.
+            strict: If True (default), validate totals match invoice.
+                   If False, export linked entries without validation.
 
         Returns:
-            CSV content as string (can be saved to file or displayed)
-        """
-        # Convert parameters to proper types (MCP may pass strings)
-        invoice_id = int(invoice_id)
+            Formatted CSV content ready for billing/records.
 
+        ALTERNATIVE - DATE RANGE EXPORT:
+        If strict validation fails or you need entries by date range regardless of
+        invoice linkage, use export_paymo_timesheet(start_date, end_date, project_id)
+        instead. That tool exports all entries in a date range.
+
+        Example:
+            export_invoice_timesheet("INV-20260331-241")
+            export_invoice_timesheet("INV-20260331-241", strict=False)  # skip validation
+        """
         config = load_config()
         api_key = config.get('api_key')
         if not api_key:
             raise ValueError("API key not configured")
 
         client = PaymoClient(api_key)
-        return client.export_invoice_entries_csv(invoice_id)
+        return client.export_invoice_formatted(invoice_number, strict=strict)
 
     @mcp.tool()
     def delete_paymo_entry(entry_id: int) -> str:
@@ -2081,28 +2244,32 @@ def list_invoices_filtered(status: Optional[str], last_week: bool):
 
 
 @cli.command()
-@click.option('--invoice-id', type=int, help='Specific invoice ID')
+@click.option('--invoice-number', '-n', help='Invoice number (e.g., INV-20260331-241)')
+@click.option('--invoice-id', type=int, help='Specific invoice ID (deprecated, use --invoice-number)')
 @click.option('--last-week', is_flag=True, help='Export for all outstanding invoices from last week')
 @click.option('--output-dir', '-o', default='.', help='Output directory for exports')
-@click.option('--no-date', is_flag=True, help='Exclude date column')
-@click.option('--no-start-time', is_flag=True, help='Exclude start time column')
-@click.option('--no-end-time', is_flag=True, help='Exclude end time column')
-def export_invoice_timesheets(invoice_id: Optional[int], last_week: bool, output_dir: str,
-                              no_date: bool, no_start_time: bool, no_end_time: bool):
-    """Export timesheets for invoice(s)"""
+def export_invoice_timesheets(invoice_number: Optional[str], invoice_id: Optional[int],
+                              last_week: bool, output_dir: str):
+    """Export formatted timesheets for invoice(s)"""
     config = load_config()
     api_key = config.get('api_key') or click.prompt('Paymo API Key', hide_input=True)
 
     client = PaymoClient(api_key)
 
     # Determine which invoices to export
-    if invoice_id:
+    if invoice_number:
+        inv = client.find_invoice_by_number(invoice_number)
+        if not inv:
+            console.print(f"[red]Error: Invoice not found: {invoice_number}[/red]")
+            return
+        invoices = [inv]
+    elif invoice_id:
         invoices = [client.get_invoice(invoice_id)]
     elif last_week:
         invoices = client.get_outstanding_invoices_last_week()
         console.print(f"\n[bold]Found {len(invoices)} outstanding invoices from last week[/bold]\n")
     else:
-        console.print("[red]Error: Must specify --invoice-id or --last-week[/red]")
+        console.print("[red]Error: Must specify --invoice-number, --invoice-id, or --last-week[/red]")
         return
 
     if not invoices:
@@ -2114,38 +2281,14 @@ def export_invoice_timesheets(invoice_id: Optional[int], last_week: bool, output
     os.makedirs(output_dir, exist_ok=True)
 
     for inv in invoices:
-        inv_id = inv.get('id')
-        inv_number = inv.get('number', f'INV-{inv_id}')
-        inv_date = inv.get('date', '')
-
-        # Get invoice details to find time entries
-        # Use invoice date and calculate billing period (usually monthly)
-        if inv_date:
-            from datetime import datetime, timedelta
-            inv_dt = datetime.strptime(inv_date, '%Y-%m-%d')
-
-            # Assume monthly billing - use first day of month to invoice date
-            start_date = inv_dt.replace(day=1).strftime('%Y-%m-%d')
-            end_date = inv_date
-        else:
-            # Fallback - use current month
-            from datetime import datetime
-            now = datetime.now()
-            start_date = now.replace(day=1).strftime('%Y-%m-%d')
-            end_date = now.strftime('%Y-%m-%d')
+        inv_number = inv.get('number', f"INV-{inv.get('id')}")
 
         console.print(f"\n[bold]Exporting: {inv_number}[/bold]")
-        console.print(f"  Period: {start_date} to {end_date}")
         console.print(f"  Amount: ${inv.get('total', 0):,.2f}")
 
         try:
-            # Export timesheet - use invoice-specific method to get only entries on this invoice
-            csv_content = client.export_invoice_entries_csv(
-                inv_id,
-                include_date=not no_date,
-                include_start_time=not no_start_time,
-                include_end_time=not no_end_time
-            )
+            # Export using the new formatted method
+            csv_content = client.export_invoice_formatted(inv_number)
 
             # Save file
             filename = f"{inv_number.replace('#', '').replace('/', '-')}_timesheet.csv"

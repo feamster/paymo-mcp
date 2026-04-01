@@ -75,9 +75,9 @@ python3 paymo_timesheet.py create-entry \
   --hours 3.5 \
   --description "Document review and analysis"
 
-# Export invoice timesheet
+# Export invoice timesheet by invoice number
 python3 paymo_timesheet.py export-invoice-timesheets \
-  --invoice-id 123456 \
+  --invoice-number INV-20260331-241 \
   --output-dir ./invoices
 
 # List unbilled entries
@@ -209,19 +209,37 @@ Get outstanding invoices from the last 7 days.
 
 **Returns:** List of recent invoices with status "sent" or "viewed".
 
-#### `export_invoice_timesheet(invoice_id: int)`
-Export detailed timesheet CSV for a specific invoice.
+#### `export_invoice_timesheet(invoice_number: str, strict: bool = True)`
+Export a formatted, billing-ready timesheet CSV for a specific invoice. **This is the primary tool for generating invoice timesheets.**
 
 **Args:**
-- `invoice_id` (int): The invoice ID to export
+- `invoice_number` (str): The invoice number as shown on the invoice (e.g., "INV-20260331-241")
+- `strict` (bool): If True (default), validate that calculated totals match invoice. If False, skip validation.
 
-**Returns:** Path to generated CSV file.
+**Returns:** Formatted CSV content with:
+- **Header section**: Matter name, Invoice number, Period, Total Hours, Fees, Expenses, Total Due
+- **Data section**: Date, Start Time (HH:MM), End Time (HH:MM), Duration, Task, Description
+- **Footer**: Expenses summary
 
 **Features:**
-- Only includes entries actually billed on that invoice
-- Chronologically sorted (earliest first)
-- Includes task names, descriptions, hours
+- **Strict matching (default)**: Only includes entries explicitly linked to that invoice via `invoice_item_id`, and validates that calculated fees match invoice totals within 5%
+- Chronologically sorted by date (earliest first)
+- Clean HH:MM time format (not raw ISO timestamps)
+- Billing-ready format with summary header
 - 90-day lookback to capture all entries
+
+**Example:**
+```python
+export_invoice_timesheet("INV-20260331-241")           # strict validation (default)
+export_invoice_timesheet("INV-20260331-241", False)    # skip validation
+```
+
+**When to use:**
+- "Export timesheet for invoice INV-20260331-241"
+- "Generate the timesheet for my latest invoice"
+- "Get a billing-ready timesheet for invoice X"
+
+**If validation fails:** Use `export_paymo_timesheet(start_date, end_date, project_id)` to export by date range instead.
 
 #### `export_paymo_timesheet(start_date, end_date, project_id=None, format="csv")`
 Export timesheet for a date range.
@@ -259,21 +277,40 @@ Export timesheet for a date range.
 
 ### Timesheet Export
 
-- *"Export the timesheet for invoice #12345"*
+- *"Export the timesheet for invoice INV-20260331-241"*
+- *"Generate timesheet for my latest DivX invoice"*
 - *"Export timesheets for all outstanding invoices from last week"*
 - *"Generate a CSV of my December time entries"*
-- *"Export the $19,500 invoice timesheet"* (matches by amount)
 
 ## Example Output
 
 ### Invoice Timesheet Export
 
+When you run `export_invoice_timesheet("INV-20260331-241")`, you get a billing-ready CSV:
+
 ```csv
-Date,Start Time,End Time,Duration (hours),Task,Description,Billed,Entry ID
-,2025-11-07T13:30:00Z,2025-11-07T19:30:00Z,6.00,Prior Art Research,Initial patent searches on all claims,,Yes,137317216
-,2025-11-07T19:30:00Z,2025-11-07T20:00:00Z,0.50,Strategy Call,Case strategy discussion with counsel,,Yes,137317187
-,2025-11-11T01:45:00Z,2025-11-11T05:59:00Z,4.23,Patent Analysis,Detailed analysis of Claims 1-5,,Yes,137364160
+Matter,DivX vs. Netflix
+Invoice,INV-20260331-241
+Period,2026-03-04 to 2026-03-25
+Total Hours,239.01
+Fees,$143406.00
+Expenses,$1016.95
+Total Due,$144422.95
+
+Date,Start Time,End Time,Duration (hours),Task,Description
+2026-03-04,09:00,10:30,1.50,Trial Prep,Trial prep
+2026-03-04,11:00,13:00,2.00,Trial Prep,"Post outline review session: incorporated feedback on outline flow"
+2026-03-06,01:00,04:00,3.00,Trial Prep,"Solo trial prep: reviewing patent materials and invalidity case outline"
+2026-03-06,16:00,17:30,1.50,Trial Prep,"Trial prep run-through with counsel re: patent technical benefits section"
+
+Expenses,$1016.95
 ```
+
+**Key features:**
+- Header with Matter, Invoice, Period, Total Hours, Fees, Expenses, Total Due
+- Times in clean HH:MM format (not raw ISO timestamps)
+- Entries sorted chronologically by date
+- Footer with expenses
 
 ### Unbilled Time Analysis
 
@@ -312,16 +349,24 @@ The MCP server enables Claude to automatically translate natural language to Pay
 
 ### Invoice-Specific Exports
 
-The `export_invoice_timesheet()` function uses smart filtering:
+The `export_invoice_timesheet()` function provides billing-ready timesheets with **strict validation**:
 
-1. Retrieves invoice and its line items
-2. Finds all time entries linked to those invoice items (via `invoice_item_id`)
-3. Looks back 90 days to catch all entries (handles monthly billing cycles)
-4. Fetches task names for each entry
-5. Sorts chronologically (earliest first)
-6. Generates clean CSV output
+1. Finds invoice by number (e.g., "INV-20260331-241")
+2. Retrieves invoice and its line items
+3. Finds all time entries linked to those invoice items (via `invoice_item_id`)
+4. **Validates totals**: Checks that (hours × rate) matches invoice total within 5%
+5. Looks back 90 days to catch all entries (handles monthly billing cycles)
+6. Fetches task names and project/matter name
+7. Sorts entries chronologically by date (earliest first)
+8. Generates formatted CSV with:
+   - Header: Matter, Invoice, Period, Total Hours, Fees, Expenses, Total Due
+   - Data: Date, Start Time (HH:MM), End Time (HH:MM), Duration, Task, Description
+   - Footer: Expenses summary
 
-This ensures you get **only** the entries actually billed on that specific invoice, properly formatted and sorted.
+This ensures you get **only** the entries actually billed on that specific invoice, with validation that the totals match.
+
+**Alternative - Date Range Export:**
+If you need entries by date range regardless of invoice linkage (or if strict validation fails), use `export_paymo_timesheet(start_date, end_date, project_id)` instead.
 
 ## Rate Limiting
 
