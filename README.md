@@ -1,6 +1,6 @@
 # Paymo MCP Server
 
-A Model Context Protocol (MCP) server for [Paymo](https://www.paymoapp.com/) time tracking and invoicing. Enables Claude Desktop to manage time entries, projects, tasks, and generate invoice timesheets.
+A Model Context Protocol (MCP) server for [Paymo](https://www.paymoapp.com/) time tracking and invoicing. Enables Claude Code to manage time entries, projects, tasks, and generate invoice timesheets.
 
 ## Features
 
