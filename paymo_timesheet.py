@@ -1556,7 +1556,7 @@ if MCP_AVAILABLE:
         flat_billing: bool = False,
         active: bool = True,
         hourly_billing_mode: str = "project",
-        adjustable_hours: bool = True
+        adjustable_hours: bool = False
     ) -> Dict[str, Any]:
         """
         Create a new Paymo project
@@ -1570,7 +1570,10 @@ if MCP_AVAILABLE:
             flat_billing: Use flat rate instead of hourly (default: False)
             active: Whether project is active (default: True)
             hourly_billing_mode: Billing mode - "project" or "task" (default: "project")
-            adjustable_hours: Auto-adjust budget based on task budgets (default: True)
+            adjustable_hours: Auto-adjust budget based on task budgets. Default False
+                because True maps to adjust_price=True server-side, which hides the
+                hourly rate in the Paymo UI gear view. Leave False unless you
+                specifically want budget auto-adjustment.
         """
         # Convert parameters to proper types (MCP may pass strings)
         try:
@@ -1596,7 +1599,8 @@ if MCP_AVAILABLE:
             'flat_billing': flat_billing,
             'active': active,
             'hourly_billing_mode': hourly_billing_mode,
-            'adjustable_hours': adjustable_hours
+            'adjustable_hours': adjustable_hours,
+            'adjust_price': adjustable_hours,  # explicit; defaults to False
         }
         if code:
             kwargs['code'] = code
@@ -1613,6 +1617,7 @@ if MCP_AVAILABLE:
             'price_per_hour': p.get('price_per_hour'),
             'hourly_billing_mode': p.get('hourly_billing_mode'),
             'adjustable_hours': p.get('adjustable_hours'),
+            'adjust_price': p.get('adjust_price'),
             'billable': p.get('billable'),
             'active': p.get('active')
         }
