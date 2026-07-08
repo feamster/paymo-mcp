@@ -276,6 +276,53 @@ Export timesheet for a date range.
 
 **Returns:** Path to exported file.
 
+### Expense Management
+
+#### `list_paymo_expenses(start_date=None, end_date=None, project_id=None, billable_only=False)`
+List Paymo expenses, optionally filtered by date range and/or project.
+
+**Args:**
+- `start_date` (str, optional): YYYY-MM-DD (inclusive)
+- `end_date` (str, optional): YYYY-MM-DD (inclusive)
+- `project_id` (int, optional): Restrict to one project/matter
+- `billable_only` (bool): If True, return only billable expenses (filtered in Python)
+
+**Returns:** List of trimmed expense dicts (`id`, `project_id`, `name`, `date`, `amount`, `billable`, `flag_billed`).
+
+**When to use:**
+- *"What expenses have I filed on matter X?"*
+- *"What was the last expense I created?"* (sort results by `date`/`id` descending)
+
+#### `create_paymo_expense(project_id, name, date, amount, description=None, quantity=1, billable=True, currency="USD")`
+Create a single expense on a project/matter.
+
+**Args:**
+- `project_id` (int): Paymo project (matter) ID
+- `name` (str): Short label, e.g. `"United - DFW deposition travel"`
+- `date` (str): YYYY-MM-DD (charge date)
+- `amount` (float): Total expense amount (price × quantity)
+- `description` (str, optional): Detail (merchant, purpose)
+- `quantity` (float): Default 1; `price` is derived as `amount / quantity`
+- `billable` (bool): Default True
+- `currency` (str): Default `"USD"`
+
+**Returns:** Trimmed created expense dict (`id`, `project_id`, `name`, `date`, `amount`, `billable`).
+
+#### `delete_paymo_expense(expense_id: int)`
+Delete an expense by ID. Corrections = delete then recreate.
+
+**Returns:** Status string (`"Successfully deleted expense N"` or a failure message).
+
+#### `audit_paymo_expenses(start_date, end_date, project_id=None)`
+Read-only audit over a date range - never writes. Checks:
+
+- **Duplicates** — exact (project+date+amount+name → *error*), near-dupe (amount+name within ±2 days → *warn*)
+- **Math integrity** — `abs(price*quantity - amount) > 0.01` → *error*; amount ≤ 0 → *warn*; non-USD → *warn*
+- **Matter-mapping sanity** — expense's project has zero hours in date ±1 window, or a different project dominated → *warn*
+- **Billing hygiene** — billable + unbilled but matter has a later invoice → *info*; `flag_billed` with no invoice link → *warn*
+
+**Returns:** `{range, counts, totals_by_matter, findings}`. Fixes are executed by the caller via `delete_paymo_expense` + `create_paymo_expense`.
+
 ## Example Queries (via Claude Desktop)
 
 ### Time Entry Creation

@@ -200,6 +200,36 @@ class PaymoClient:
         response = self._request('PUT', f'projects/{project_id}', json=kwargs)
         return response.get('projects', [{}])[0] if 'projects' in response else response
 
+    def get_expenses(self, project_id: Optional[int] = None,
+                     start_date: Optional[str] = None,
+                     end_date: Optional[str] = None) -> List[Dict]:
+        """List expenses, optionally filtered by project and/or date range.
+
+        Date filter is applied via `?where=date in ("start","end")`. If the
+        server rejects the clause (silent empty result seen with certain Paymo
+        accounts), callers should fall back to fetching unfiltered and
+        filtering in Python.
+        """
+        endpoint = "expenses"
+        clauses = []
+        if project_id:
+            clauses.append(f"project_id={int(project_id)}")
+        if start_date and end_date:
+            clauses.append(f'date in ("{start_date}","{end_date}")')
+        if clauses:
+            endpoint += "?where=" + " and ".join(clauses)
+        return self._request('GET', endpoint).get('expenses', [])
+
+    def create_expense(self, project_id: int, **kwargs) -> Dict:
+        """Create a single expense on a project."""
+        data = {'project_id': int(project_id), **kwargs}
+        r = self._request('POST', 'expenses', json=data)
+        return r.get('expenses', [{}])[0] if 'expenses' in r else r
+
+    def delete_expense(self, expense_id: int) -> Dict:
+        """Delete an expense by ID."""
+        return self._request('DELETE', f'expenses/{int(expense_id)}')
+
     def get_invoices(self, client_id: Optional[int] = None, status: Optional[str] = None) -> List[Dict]:
         """
         List invoices, optionally filtered by client and status
@@ -2465,6 +2495,524 @@ if MCP_AVAILABLE:
         result.sort(key=lambda x: x['unbilled_amount'], reverse=True)
 
         return result
+
+    @mcp.tool()
+    def list_paymo_expenses(
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        project_id: Optional[int] = None,
+        billable_only: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        List Paymo expenses, optionally filtered by date range and/or project.
+
+        Also used to answer "what was the last expense I filed?" (sort results
+        by date/id descending) and "what expenses exist on matter X?".
+
+        Args:
+            start_date: YYYY-MM-DD (inclusive)
+            end_date: YYYY-MM-DD (inclusive)
+            project_id: Restrict to one project/matter
+            billable_only: If True, return only billable expenses
+        """
+        if project_id is not None:
+            try:
+                project_id = int(project_id)
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"Invalid project_id '{project_id}': {e}")
+
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+
+        client = PaymoClient(api_key)
+
+        # Try server-side date filter first; if it returns empty AND we have a
+        # date range, fall back to unfiltered fetch + Python-side filter to
+        # protect against silent-empty-result behavior on the `date in (...)`
+        # clause.
+        expenses = client.get_expenses(
+            project_id=project_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        if start_date and end_date and not expenses:
+            all_expenses = client.get_expenses(project_id=project_id)
+            expenses = [
+                e for e in all_expenses
+                if e.get('date') and start_date <= e.get('date') <= end_date
+            ]
+
+        if billable_only:
+            expenses = [e for e in expenses if e.get('billable')]
+
+        return [{
+            'id': e.get('id'),
+            'project_id': e.get('project_id'),
+            'name': e.get('name'),
+            'date': e.get('date'),
+            'amount': e.get('amount'),
+            'billable': e.get('billable'),
+            'flag_billed': e.get('flag_billed'),
+        } for e in expenses]
+
+    @mcp.tool()
+    def create_paymo_expense(
+        project_id: int,
+        name: str,
+        date: str,
+        amount: float,
+        description: Optional[str] = None,
+        quantity: float = 1,
+        billable: bool = True,
+        currency: str = "USD",
+    ) -> Dict[str, Any]:
+        """
+        Create a single expense on a project/matter.
+
+        Args:
+            project_id: Paymo project (matter) ID
+            name: Short label, e.g. "United - DFW deposition travel"
+            date: YYYY-MM-DD (charge date)
+            amount: Total expense amount (price * quantity)
+            description: Optional detail (merchant, purpose)
+            quantity: Default 1; price is derived as amount/quantity
+            billable: Default True
+            currency: Default USD
+        """
+        try:
+            project_id = int(project_id)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid project_id '{project_id}': {e}")
+        try:
+            amount = float(amount)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid amount '{amount}': {e}")
+        try:
+            quantity = float(quantity)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid quantity '{quantity}': {e}")
+
+        if quantity == 0:
+            raise ValueError("quantity must be non-zero")
+
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+
+        client = PaymoClient(api_key)
+
+        payload = {
+            'name': name,
+            'date': date,
+            'amount': amount,
+            'price': amount / quantity,
+            'quantity': quantity,
+            'billable': billable,
+            'currency': currency,
+        }
+        if description:
+            payload['description'] = description
+
+        e = client.create_expense(project_id, **payload)
+
+        return {
+            'id': e.get('id'),
+            'project_id': e.get('project_id'),
+            'name': e.get('name'),
+            'date': e.get('date'),
+            'amount': e.get('amount'),
+            'billable': e.get('billable'),
+        }
+
+    @mcp.tool()
+    def delete_paymo_expense(expense_id: int) -> str:
+        """
+        Delete an expense by ID. Corrections = delete then recreate.
+
+        Args:
+            expense_id: The ID of the expense to delete
+        """
+        expense_id = int(expense_id)
+
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+        try:
+            client.delete_expense(expense_id)
+            return f"Successfully deleted expense {expense_id}"
+        except Exception as e:
+            return f"Failed to delete expense: {e}"
+
+    @mcp.tool()
+    def audit_paymo_expenses(
+        start_date: str,
+        end_date: str,
+        project_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Read-only audit of existing expenses over a date range. Never writes.
+        Returns findings grouped by severity plus per-matter totals.
+
+        Checks performed:
+          - Duplicates (same project+date+amount+name -> error; same
+            amount+name within +/-2 days across any project -> warn)
+          - Math integrity (price*quantity vs amount, non-positive amounts,
+            non-USD currency)
+          - Matter-mapping sanity (expense's project has zero logged hours in
+            date+/-1 window, or a different project dominated the window)
+          - Billing hygiene (billable+unbilled but matter has a later invoice;
+            flag_billed with no invoice link)
+
+        Any fixes must be applied by the caller via delete_paymo_expense +
+        create_paymo_expense.
+
+        Args:
+            start_date: YYYY-MM-DD (inclusive)
+            end_date: YYYY-MM-DD (inclusive)
+            project_id: Optional restriction to one project
+        """
+        if project_id is not None:
+            try:
+                project_id = int(project_id)
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"Invalid project_id '{project_id}': {e}")
+
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+
+        client = PaymoClient(api_key)
+
+        # Fetch expenses with the same fallback approach used by list_paymo_expenses
+        expenses = client.get_expenses(
+            project_id=project_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if start_date and end_date and not expenses:
+            all_expenses = client.get_expenses(project_id=project_id)
+            expenses = [
+                e for e in all_expenses
+                if e.get('date') and start_date <= e.get('date') <= end_date
+            ]
+
+        # Build task_id -> project_id map once (used for matter-mapping check)
+        task_to_project: Dict[int, int] = {}
+        try:
+            for t in client.get_tasks():
+                tid = t.get('id')
+                pid = t.get('project_id')
+                if tid is not None and pid is not None:
+                    task_to_project[tid] = pid
+        except Exception:
+            pass
+
+        # Cache project names
+        project_names: Dict[int, str] = {}
+        try:
+            for p in client.get_projects(active_only=False):
+                pid = p.get('id')
+                if pid is not None:
+                    project_names[pid] = p.get('name', f'Project {pid}')
+        except Exception:
+            pass
+
+        # Invoices for billing-hygiene check
+        try:
+            invoices = client.get_invoices()
+        except Exception:
+            invoices = []
+
+        # Cache time entries per (date-1, date+1) window to avoid repeated API calls
+        entry_window_cache: Dict[Tuple[str, str], List[Dict]] = {}
+
+        def get_entries_window(center_date: str) -> List[Dict]:
+            try:
+                d = datetime.strptime(center_date, '%Y-%m-%d')
+            except (ValueError, TypeError):
+                return []
+            s = (d - timedelta(days=1)).strftime('%Y-%m-%d')
+            e = (d + timedelta(days=1)).strftime('%Y-%m-%d')
+            key = (s, e)
+            if key not in entry_window_cache:
+                try:
+                    entry_window_cache[key] = client.get_entries(s, e)
+                except Exception:
+                    entry_window_cache[key] = []
+            return entry_window_cache[key]
+
+        findings: List[Dict[str, Any]] = []
+        totals_by_matter: Dict[int, Dict[str, Any]] = {}
+
+        # Group for exact-duplicate detection
+        exact_group: Dict[Tuple[Any, Any, Any, Any], List[Dict]] = {}
+        for e in expenses:
+            key = (
+                e.get('project_id'),
+                e.get('date'),
+                round(float(e.get('amount') or 0), 2),
+                (e.get('name') or '').strip().lower(),
+            )
+            exact_group.setdefault(key, []).append(e)
+
+        seen_exact_ids = set()
+        for key, group in exact_group.items():
+            if len(group) > 1:
+                for dup in group[1:]:
+                    if dup.get('id') in seen_exact_ids:
+                        continue
+                    seen_exact_ids.add(dup.get('id'))
+                    findings.append({
+                        'severity': 'error',
+                        'expense_id': dup.get('id'),
+                        'project_id': dup.get('project_id'),
+                        'date': dup.get('date'),
+                        'amount': dup.get('amount'),
+                        'finding': (
+                            f"Exact duplicate of expense {group[0].get('id')} "
+                            f"(same project+date+amount+name)"
+                        ),
+                        'suggested_action': (
+                            f"Delete expense {dup.get('id')} if confirmed a duplicate"
+                        ),
+                    })
+
+        # Near-duplicate detection (+/-2 days, any project, same amount+name)
+        def parse_date(s: str) -> Optional[datetime]:
+            try:
+                return datetime.strptime(s, '%Y-%m-%d')
+            except (ValueError, TypeError):
+                return None
+
+        for i, e in enumerate(expenses):
+            e_date = parse_date(e.get('date') or '')
+            if not e_date:
+                continue
+            e_amount = round(float(e.get('amount') or 0), 2)
+            e_name = (e.get('name') or '').strip().lower()
+            for other in expenses[i + 1:]:
+                if other.get('id') == e.get('id'):
+                    continue
+                o_date = parse_date(other.get('date') or '')
+                if not o_date:
+                    continue
+                o_amount = round(float(other.get('amount') or 0), 2)
+                o_name = (other.get('name') or '').strip().lower()
+                if o_amount != e_amount or o_name != e_name:
+                    continue
+                delta_days = abs((o_date - e_date).days)
+                # skip 0-day same-project (already handled as exact dupe)
+                if delta_days == 0 and other.get('project_id') == e.get('project_id'):
+                    continue
+                if delta_days <= 2:
+                    findings.append({
+                        'severity': 'warn',
+                        'expense_id': other.get('id'),
+                        'project_id': other.get('project_id'),
+                        'date': other.get('date'),
+                        'amount': other.get('amount'),
+                        'finding': (
+                            f"Near-duplicate of expense {e.get('id')} "
+                            f"(same amount+name, {delta_days}d apart)"
+                        ),
+                        'suggested_action': (
+                            "Confirm both are real; delete one if duplicated"
+                        ),
+                    })
+
+        # Math integrity + matter-mapping + billing hygiene per expense
+        for e in expenses:
+            eid = e.get('id')
+            pid = e.get('project_id')
+            edate = e.get('date') or ''
+            amount = e.get('amount')
+            price = e.get('price')
+            quantity = e.get('quantity')
+            currency = e.get('currency')
+
+            # Track totals
+            if pid is not None:
+                slot = totals_by_matter.setdefault(pid, {
+                    'name': project_names.get(pid, f'Project {pid}'),
+                    'amount': 0.0,
+                })
+                try:
+                    slot['amount'] += float(amount or 0)
+                except (ValueError, TypeError):
+                    pass
+
+            # Math integrity
+            try:
+                if price is not None and quantity is not None and amount is not None:
+                    calc = float(price) * float(quantity)
+                    if abs(calc - float(amount)) > 0.01:
+                        findings.append({
+                            'severity': 'error',
+                            'expense_id': eid,
+                            'project_id': pid,
+                            'date': edate,
+                            'amount': amount,
+                            'finding': (
+                                f"price*quantity ({calc:.2f}) does not match "
+                                f"amount ({float(amount):.2f})"
+                            ),
+                            'suggested_action': (
+                                "Delete and recreate with consistent price/quantity/amount"
+                            ),
+                        })
+            except (ValueError, TypeError):
+                pass
+
+            try:
+                if amount is not None and float(amount) <= 0:
+                    findings.append({
+                        'severity': 'warn',
+                        'expense_id': eid,
+                        'project_id': pid,
+                        'date': edate,
+                        'amount': amount,
+                        'finding': "Amount is zero or negative",
+                        'suggested_action': "Verify - most expenses should be positive",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+            if currency and currency != 'USD':
+                findings.append({
+                    'severity': 'warn',
+                    'expense_id': eid,
+                    'project_id': pid,
+                    'date': edate,
+                    'amount': amount,
+                    'finding': f"Non-USD currency: {currency}",
+                    'suggested_action': "Confirm currency is intentional",
+                })
+
+            # Matter-mapping sanity
+            if edate and pid is not None:
+                window_entries = get_entries_window(edate)
+                hours_by_project: Dict[int, float] = {}
+                for ent in window_entries:
+                    ent_pid = ent.get('project_id')
+                    if ent_pid is None:
+                        tid = ent.get('task_id')
+                        if tid is not None:
+                            ent_pid = task_to_project.get(tid)
+                    if ent_pid is None:
+                        continue
+                    dur = ent.get('duration') or 0
+                    try:
+                        hours_by_project[ent_pid] = hours_by_project.get(ent_pid, 0.0) + float(dur) / 3600.0
+                    except (ValueError, TypeError):
+                        continue
+
+                expense_hours = hours_by_project.get(pid, 0.0)
+                if hours_by_project:
+                    dominant_pid, dominant_hours = max(
+                        hours_by_project.items(), key=lambda kv: kv[1]
+                    )
+                    if expense_hours == 0.0:
+                        findings.append({
+                            'severity': 'warn',
+                            'expense_id': eid,
+                            'project_id': pid,
+                            'date': edate,
+                            'amount': amount,
+                            'finding': (
+                                f"Possible misattribution: no hours logged on project "
+                                f"{pid} in +/-1d window; dominant matter was "
+                                f"'{project_names.get(dominant_pid, dominant_pid)}' "
+                                f"({dominant_hours:.1f}h)"
+                            ),
+                            'suggested_action': (
+                                f"Consider reassigning to project {dominant_pid} "
+                                f"('{project_names.get(dominant_pid, dominant_pid)}')"
+                            ),
+                        })
+                    elif dominant_pid != pid and dominant_hours > expense_hours * 2:
+                        findings.append({
+                            'severity': 'warn',
+                            'expense_id': eid,
+                            'project_id': pid,
+                            'date': edate,
+                            'amount': amount,
+                            'finding': (
+                                f"Possible misattribution: only {expense_hours:.1f}h "
+                                f"on project {pid} vs {dominant_hours:.1f}h on "
+                                f"'{project_names.get(dominant_pid, dominant_pid)}'"
+                            ),
+                            'suggested_action': (
+                                f"Verify project attribution; dominant matter was "
+                                f"{dominant_pid}"
+                            ),
+                        })
+
+            # Billing hygiene
+            billable = e.get('billable')
+            flag_billed = e.get('flag_billed')
+            exp_date = parse_date(edate) if edate else None
+
+            if billable and not flag_billed and pid is not None and exp_date:
+                later_invoice = False
+                for inv in invoices:
+                    inv_pids = inv.get('projects') or inv.get('project_ids') or []
+                    if isinstance(inv_pids, list) and pid not in inv_pids and inv.get('project_id') != pid:
+                        continue
+                    inv_date = parse_date(inv.get('date') or '')
+                    if inv_date and inv_date >= exp_date:
+                        later_invoice = True
+                        break
+                if later_invoice:
+                    findings.append({
+                        'severity': 'info',
+                        'expense_id': eid,
+                        'project_id': pid,
+                        'date': edate,
+                        'amount': amount,
+                        'finding': "Billable + unbilled but matter has a later invoice",
+                        'suggested_action': "May belong on that filed invoice",
+                    })
+
+            if flag_billed:
+                has_link = bool(
+                    e.get('invoice_id') or e.get('invoice_item_id')
+                )
+                if not has_link:
+                    findings.append({
+                        'severity': 'warn',
+                        'expense_id': eid,
+                        'project_id': pid,
+                        'date': edate,
+                        'amount': amount,
+                        'finding': "flag_billed=true but no invoice link on the expense",
+                        'suggested_action': "Verify billing state; may need re-linking",
+                    })
+
+        counts = {
+            'expenses': len(expenses),
+            'errors': sum(1 for f in findings if f['severity'] == 'error'),
+            'warnings': sum(1 for f in findings if f['severity'] == 'warn'),
+            'info': sum(1 for f in findings if f['severity'] == 'info'),
+        }
+
+        # Round totals
+        for pid, slot in totals_by_matter.items():
+            slot['amount'] = round(slot['amount'], 2)
+
+        return {
+            'range': {'start': start_date, 'end': end_date},
+            'counts': counts,
+            'totals_by_matter': totals_by_matter,
+            'findings': findings,
+        }
 
 
 def run_mcp_server():
