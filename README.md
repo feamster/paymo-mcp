@@ -287,7 +287,9 @@ List Paymo expenses, optionally filtered by date range and/or project.
 - `project_id` (int, optional): Restrict to one project/matter
 - `billable_only` (bool): If True, return only billable expenses (filtered in Python)
 
-**Returns:** List of trimmed expense dicts (`id`, `project_id`, `name`, `date`, `amount`, `billable`, `flag_billed`).
+**Returns:** List of trimmed expense dicts (`id`, `project_id`, `client_id`, `name`, `notes`, `date`, `amount`, `currency`, `billable`, `invoiced`, `invoice_item_id`).
+
+**Note on date filtering:** Paymo's server-side `where=date in (...)` clause is *set membership*, not a range, and silently returns wrong results. This tool filters dates in Python; the `project_id` server filter is used when supplied.
 
 **When to use:**
 - *"What expenses have I filed on matter X?"*
@@ -317,9 +319,9 @@ Delete an expense by ID. Corrections = delete then recreate.
 Read-only audit over a date range - never writes. Checks:
 
 - **Duplicates** — exact (project+date+amount+name → *error*), near-dupe (amount+name within ±2 days → *warn*)
-- **Math integrity** — `abs(price*quantity - amount) > 0.01` → *error*; amount ≤ 0 → *warn*; non-USD → *warn*
+- **Math integrity** — `abs(price - amount) > 0.01` → *error*; amount ≤ 0 → *warn*; non-USD → *warn*. (Paymo does not persist `quantity`, so unit expenses have `price == amount`.)
 - **Matter-mapping sanity** — expense's project has zero hours in date ±1 window, or a different project dominated → *warn*
-- **Billing hygiene** — billable + unbilled but matter has a later invoice → *info*; `flag_billed` with no invoice link → *warn*
+- **Billing hygiene** — billable + uninvoiced but matter has a later invoice → *info*; `invoiced=true` with no `invoice_item_id` link → *warn*
 
 **Returns:** `{range, counts, totals_by_matter, findings}`. Fixes are executed by the caller via `delete_paymo_expense` + `create_paymo_expense`.
 
