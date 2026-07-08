@@ -205,20 +205,22 @@ class PaymoClient:
                      end_date: Optional[str] = None) -> List[Dict]:
         """List expenses, optionally filtered by project and/or date range.
 
-        Date filter is applied via `?where=date in ("start","end")`. If the
-        server rejects the clause (silent empty result seen with certain Paymo
-        accounts), callers should fall back to fetching unfiltered and
-        filtering in Python.
+        Server-side project_id filter works. Date range is applied client-side
+        because Paymo's `?where=date in ("start","end")` is literal set
+        membership on those two dates - not a range - and silently returns
+        wrong results (verified against live account 2026-07: range with 12
+        real hits returned only the 2 records dated exactly on the endpoints).
         """
         endpoint = "expenses"
-        clauses = []
         if project_id:
-            clauses.append(f"project_id={int(project_id)}")
+            endpoint += f"?where=project_id={int(project_id)}"
+        expenses = self._request('GET', endpoint).get('expenses', [])
         if start_date and end_date:
-            clauses.append(f'date in ("{start_date}","{end_date}")')
-        if clauses:
-            endpoint += "?where=" + " and ".join(clauses)
-        return self._request('GET', endpoint).get('expenses', [])
+            expenses = [
+                e for e in expenses
+                if e.get('date') and start_date <= e.get('date') <= end_date
+            ]
+        return expenses
 
     def create_expense(self, project_id: int, **kwargs) -> Dict:
         """Create a single expense on a project."""
@@ -2528,22 +2530,11 @@ if MCP_AVAILABLE:
 
         client = PaymoClient(api_key)
 
-        # Try server-side date filter first; if it returns empty AND we have a
-        # date range, fall back to unfiltered fetch + Python-side filter to
-        # protect against silent-empty-result behavior on the `date in (...)`
-        # clause.
         expenses = client.get_expenses(
             project_id=project_id,
             start_date=start_date,
             end_date=end_date,
         )
-
-        if start_date and end_date and not expenses:
-            all_expenses = client.get_expenses(project_id=project_id)
-            expenses = [
-                e for e in all_expenses
-                if e.get('date') and start_date <= e.get('date') <= end_date
-            ]
 
         if billable_only:
             expenses = [e for e in expenses if e.get('billable')]
@@ -2551,11 +2542,15 @@ if MCP_AVAILABLE:
         return [{
             'id': e.get('id'),
             'project_id': e.get('project_id'),
+            'client_id': e.get('client_id'),
             'name': e.get('name'),
+            'notes': e.get('notes'),
             'date': e.get('date'),
             'amount': e.get('amount'),
+            'currency': e.get('currency'),
             'billable': e.get('billable'),
-            'flag_billed': e.get('flag_billed'),
+            'invoiced': e.get('invoiced'),
+            'invoice_item_id': e.get('invoice_item_id'),
         } for e in expenses]
 
     @mcp.tool()
@@ -2605,17 +2600,19 @@ if MCP_AVAILABLE:
 
         client = PaymoClient(api_key)
 
+        # Live shape check (2026-07): Paymo expense records carry `price` and
+        # `amount` (equal on unit expenses); `quantity` is not persisted, and
+        # the description-like field is `notes`, not `description`.
         payload = {
             'name': name,
             'date': date,
             'amount': amount,
             'price': amount / quantity,
-            'quantity': quantity,
             'billable': billable,
             'currency': currency,
         }
         if description:
-            payload['description'] = description
+            payload['notes'] = description
 
         e = client.create_expense(project_id, **payload)
 
@@ -2623,6 +2620,7 @@ if MCP_AVAILABLE:
             'id': e.get('id'),
             'project_id': e.get('project_id'),
             'name': e.get('name'),
+            'notes': e.get('notes'),
             'date': e.get('date'),
             'amount': e.get('amount'),
             'billable': e.get('billable'),
@@ -2663,12 +2661,13 @@ if MCP_AVAILABLE:
         Checks performed:
           - Duplicates (same project+date+amount+name -> error; same
             amount+name within +/-2 days across any project -> warn)
-          - Math integrity (price*quantity vs amount, non-positive amounts,
-            non-USD currency)
+          - Math integrity (price vs amount, non-positive amounts,
+            non-USD currency). Note: Paymo does not persist `quantity`, so
+            we compare `price` vs `amount` directly.
           - Matter-mapping sanity (expense's project has zero logged hours in
             date+/-1 window, or a different project dominated the window)
-          - Billing hygiene (billable+unbilled but matter has a later invoice;
-            flag_billed with no invoice link)
+          - Billing hygiene (billable+uninvoiced but matter has a later
+            invoice; invoiced=true with no invoice_item_id link)
 
         Any fixes must be applied by the caller via delete_paymo_expense +
         create_paymo_expense.
@@ -2691,18 +2690,11 @@ if MCP_AVAILABLE:
 
         client = PaymoClient(api_key)
 
-        # Fetch expenses with the same fallback approach used by list_paymo_expenses
         expenses = client.get_expenses(
             project_id=project_id,
             start_date=start_date,
             end_date=end_date,
         )
-        if start_date and end_date and not expenses:
-            all_expenses = client.get_expenses(project_id=project_id)
-            expenses = [
-                e for e in all_expenses
-                if e.get('date') and start_date <= e.get('date') <= end_date
-            ]
 
         # Build task_id -> project_id map once (used for matter-mapping check)
         task_to_project: Dict[int, int] = {}
@@ -2835,7 +2827,6 @@ if MCP_AVAILABLE:
             edate = e.get('date') or ''
             amount = e.get('amount')
             price = e.get('price')
-            quantity = e.get('quantity')
             currency = e.get('currency')
 
             # Track totals
@@ -2849,11 +2840,11 @@ if MCP_AVAILABLE:
                 except (ValueError, TypeError):
                     pass
 
-            # Math integrity
+            # Math integrity: Paymo does not persist quantity, so on unit
+            # expenses price == amount. Any drift is a data anomaly.
             try:
-                if price is not None and quantity is not None and amount is not None:
-                    calc = float(price) * float(quantity)
-                    if abs(calc - float(amount)) > 0.01:
+                if price is not None and amount is not None:
+                    if abs(float(price) - float(amount)) > 0.01:
                         findings.append({
                             'severity': 'error',
                             'expense_id': eid,
@@ -2861,11 +2852,11 @@ if MCP_AVAILABLE:
                             'date': edate,
                             'amount': amount,
                             'finding': (
-                                f"price*quantity ({calc:.2f}) does not match "
+                                f"price ({float(price):.2f}) does not match "
                                 f"amount ({float(amount):.2f})"
                             ),
                             'suggested_action': (
-                                "Delete and recreate with consistent price/quantity/amount"
+                                "Delete and recreate with consistent price/amount"
                             ),
                         })
             except (ValueError, TypeError):
@@ -2955,12 +2946,13 @@ if MCP_AVAILABLE:
                             ),
                         })
 
-            # Billing hygiene
+            # Billing hygiene - Paymo's real field is `invoiced` (bool);
+            # `invoice_item_id` is the link.
             billable = e.get('billable')
-            flag_billed = e.get('flag_billed')
+            invoiced = e.get('invoiced')
             exp_date = parse_date(edate) if edate else None
 
-            if billable and not flag_billed and pid is not None and exp_date:
+            if billable and not invoiced and pid is not None and exp_date:
                 later_invoice = False
                 for inv in invoices:
                     inv_pids = inv.get('projects') or inv.get('project_ids') or []
@@ -2977,24 +2969,20 @@ if MCP_AVAILABLE:
                         'project_id': pid,
                         'date': edate,
                         'amount': amount,
-                        'finding': "Billable + unbilled but matter has a later invoice",
+                        'finding': "Billable + uninvoiced but matter has a later invoice",
                         'suggested_action': "May belong on that filed invoice",
                     })
 
-            if flag_billed:
-                has_link = bool(
-                    e.get('invoice_id') or e.get('invoice_item_id')
-                )
-                if not has_link:
-                    findings.append({
-                        'severity': 'warn',
-                        'expense_id': eid,
-                        'project_id': pid,
-                        'date': edate,
-                        'amount': amount,
-                        'finding': "flag_billed=true but no invoice link on the expense",
-                        'suggested_action': "Verify billing state; may need re-linking",
-                    })
+            if invoiced and not e.get('invoice_item_id'):
+                findings.append({
+                    'severity': 'warn',
+                    'expense_id': eid,
+                    'project_id': pid,
+                    'date': edate,
+                    'amount': amount,
+                    'finding': "invoiced=true but no invoice_item_id link on the expense",
+                    'suggested_action': "Verify billing state; may need re-linking",
+                })
 
         counts = {
             'expenses': len(expenses),
