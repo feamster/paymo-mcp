@@ -295,6 +295,16 @@ class PaymoClient:
         """Delete an expense by ID."""
         return self._request('DELETE', f'expenses/{int(expense_id)}')
 
+    def update_expense(self, expense_id: int, **kwargs) -> Dict:
+        """Update an expense (amount, name, notes, date, etc.).
+        Preserves invoice_item_id / attachments — delete+recreate would not."""
+        r = self._request('PUT', f'expenses/{int(expense_id)}', json=kwargs)
+        return r.get('expenses', [{}])[0] if 'expenses' in r else r
+
+    def delete_file(self, file_id: int) -> Dict:
+        """Delete a file attachment by file ID."""
+        return self._request('DELETE', f'files/{int(file_id)}')
+
     def get_invoices(self, client_id: Optional[int] = None, status: Optional[str] = None) -> List[Dict]:
         """
         List invoices, optionally filtered by client and status
