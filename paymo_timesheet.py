@@ -2284,6 +2284,94 @@ if MCP_AVAILABLE:
         return client.update_entry(entry_id, billed=billed)
 
     @mcp.tool()
+    def update_paymo_entry(
+        entry_id: int,
+        description: Optional[str] = None,
+        duration_hours: Optional[float] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        date: Optional[str] = None,
+        task_id: Optional[int] = None,
+        billed: Optional[bool] = None,
+        timezone: str = "America/Chicago",
+    ) -> Dict[str, Any]:
+        """
+        Adjust an existing time entry in place - avoids the delete + recreate
+        cycle for typos, wrong task/matter, wrong duration, or date fixes.
+
+        Only fields you pass are updated; anything left None is preserved.
+        Provide EITHER duration_hours OR both start_time and end_time when
+        changing the time - never mix.
+
+        Args:
+            entry_id: Paymo entry ID to update
+            description: New description text
+            duration_hours: New total hours (use this OR start_time+end_time)
+            start_time: New start time HH:MM 24-hour (needs end_time and date)
+            end_time: New end time HH:MM 24-hour (needs start_time and date)
+            date: New date YYYY-MM-DD (required if start_time/end_time given)
+            task_id: Move entry to a different task (also moves matter if
+                the new task is on a different project)
+            billed: Set billing status (True/False)
+            timezone: IANA tz for start/end conversion (default America/Chicago)
+        """
+        entry_id = int(entry_id)
+
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+        client = PaymoClient(api_key)
+
+        payload: Dict[str, Any] = {}
+        if description is not None:
+            payload['description'] = description
+        if task_id is not None:
+            payload['task_id'] = int(task_id)
+        if billed is not None:
+            payload['billed'] = billed
+        if date is not None:
+            payload['date'] = date
+
+        # Time changes: mirror create_paymo_entry's conversion logic
+        if start_time is not None or end_time is not None:
+            if not (start_time and end_time):
+                raise ValueError("start_time and end_time must be provided together")
+            if not date:
+                raise ValueError("date is required when updating start_time/end_time")
+            if duration_hours is not None:
+                raise ValueError("Provide EITHER duration_hours OR start_time+end_time, not both")
+            from zoneinfo import ZoneInfo
+            local_tz = ZoneInfo(timezone)
+            utc = ZoneInfo("UTC")
+            start_dt = datetime.strptime(f"{date} {start_time}", "%Y-%m-%d %H:%M")
+            start_dt = start_dt.replace(tzinfo=local_tz).astimezone(utc)
+            end_dt = datetime.strptime(f"{date} {end_time}", "%Y-%m-%d %H:%M")
+            end_dt = end_dt.replace(tzinfo=local_tz).astimezone(utc)
+            payload['start_time'] = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
+            payload['end_time'] = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
+        elif duration_hours is not None:
+            payload['duration'] = int(float(duration_hours) * 3600)
+
+        if not payload:
+            raise ValueError("No fields to update - pass at least one changed field")
+
+        updated = client.update_entry(entry_id, **payload)
+
+        # Trim the return like other tools
+        return {
+            'id': updated.get('id'),
+            'project_id': updated.get('project_id'),
+            'task_id': updated.get('task_id'),
+            'date': updated.get('date'),
+            'start_time': updated.get('start_time'),
+            'end_time': updated.get('end_time'),
+            'duration_hours': round((updated.get('duration') or 0) / 3600, 2),
+            'description': updated.get('description'),
+            'billed': updated.get('billed', False),
+        }
+
+    @mcp.tool()
     def list_paymo_entries(
         start_date: str,
         end_date: str,
