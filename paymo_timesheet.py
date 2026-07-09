@@ -49,38 +49,38 @@ class PaymoClient:
             'Content-Type': 'application/json'
         })
 
+    def _handle_rate_limit(self, response) -> None:
+        """Inspect rate-limit headers on a response and sleep if we've drained
+        the budget. Used by both _request and file-upload paths so that write
+        endpoints (which bypass _request via multipart) still respect Paymo's
+        pacing. Without this, POST /files right after POST /expenses returns
+        400 (not 429) because we overran the write-budget."""
+        remaining = response.headers.get('X-Ratelimit-Remaining')
+        limit = response.headers.get('X-Ratelimit-Limit')
+        decay = response.headers.get('X-Ratelimit-Decay-Period')
+        if not remaining:
+            return
+        try:
+            remaining_values = [int(x.strip()) for x in remaining.split(',')]
+            remaining_min = min(remaining_values)
+        except ValueError:
+            return
+        if remaining_min < 5:
+            console.print(f"[yellow]⚠ Rate limit: {remaining}/{limit} remaining (resets in {decay}s)[/yellow]")
+        if remaining_min <= 1:
+            try:
+                wait = int(decay) if decay else 5
+            except (ValueError, TypeError):
+                wait = 5
+            time.sleep(max(1, min(wait, 10)))
+
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict:
         """Make API request with error handling"""
         url = f"{self.base_url}{endpoint.lstrip('/')}"
 
         try:
             response = self.session.request(method, url, **kwargs)
-
-            # Check rate limiting headers
-            # Note: Paymo may return multiple values like "4, 3" for different rate limit buckets
-            remaining = response.headers.get('X-Ratelimit-Remaining')
-            limit = response.headers.get('X-Ratelimit-Limit')
-            decay = response.headers.get('X-Ratelimit-Decay-Period')
-
-            if remaining:
-                try:
-                    # Handle comma-separated values by taking the minimum
-                    remaining_values = [int(x.strip()) for x in remaining.split(',')]
-                    remaining_min = min(remaining_values)
-                    if remaining_min < 5:
-                        console.print(f"[yellow]⚠ Rate limit: {remaining}/{limit} remaining (resets in {decay}s)[/yellow]")
-                    # Proactive backoff: when we're within 2 of the cap, sleep
-                    # the reported decay period so the *next* caller isn't 429'd.
-                    # Prevents the "one heavy tool starves the next call" pattern
-                    # seen in audit_paymo_expenses and expense-batch filing runs.
-                    if remaining_min <= 1:
-                        try:
-                            wait = int(decay) if decay else 5
-                        except (ValueError, TypeError):
-                            wait = 5
-                        time.sleep(max(1, min(wait, 10)))
-                except ValueError:
-                    pass  # Ignore malformed rate limit headers
+            self._handle_rate_limit(response)
 
             response.raise_for_status()
             return response.json()
@@ -241,31 +241,48 @@ class PaymoClient:
         r = self._request('POST', 'expenses', json=data)
         return r.get('expenses', [{}])[0] if 'expenses' in r else r
 
-    def upload_expense_file(self, expense_id: int, file_path: str) -> Dict:
+    def upload_expense_file(self, expense_id: int, file_path: str,
+                            max_retries: int = 3) -> Dict:
         """Attach a file to an existing expense.
 
         Paymo's public write endpoint is POST /files with the target expense_id
         as a form field (verified 2026-07). The multipart PUT /expenses/{id}
         returns 200 but does not persist the file, so that path is a trap and
-        should not be used. Returns the created file record.
+        should not be used.
+
+        Rate-limit behavior: when the write budget is drained, Paymo returns
+        400 "Bad Request" here (not 429). Retry with exponential backoff so
+        the caller doesn't have to.
         """
         import mimetypes, os
         p = os.path.expanduser(str(file_path))
         if not os.path.exists(p):
             raise ValueError(f"Attachment not found: {p}")
         mime = mimetypes.guess_type(p)[0] or 'application/octet-stream'
-        # Build a one-off request that omits our JSON Content-Type; requests
-        # will set the multipart boundary correctly.
         headers = {k: v for k, v in self.session.headers.items() if k.lower() != 'content-type'}
-        with open(p, 'rb') as fh:
-            resp = self.session.post(
-                f"{self.base_url}files",
-                headers=headers,
-                files={'file': (os.path.basename(p), fh, mime)},
-                data={'expense_id': int(expense_id)},
-            )
-        resp.raise_for_status()
-        return resp.json().get('files', [{}])[0] if 'files' in resp.json() else resp.json()
+
+        last_err = None
+        for attempt in range(max_retries):
+            with open(p, 'rb') as fh:
+                resp = self.session.post(
+                    f"{self.base_url}files",
+                    headers=headers,
+                    files={'file': (os.path.basename(p), fh, mime)},
+                    data={'expense_id': int(expense_id)},
+                )
+            self._handle_rate_limit(resp)
+            if resp.status_code < 400:
+                body = resp.json()
+                return body.get('files', [{}])[0] if 'files' in body else body
+            # Retry on 400 or 429 - Paymo returns 400 when write budget drained
+            if resp.status_code in (400, 429) and attempt < max_retries - 1:
+                wait = 2 ** (attempt + 2)  # 4s, 8s, 16s
+                console.print(f"[yellow]Upload attempt {attempt+1} got {resp.status_code}; retry in {wait}s[/yellow]")
+                time.sleep(wait)
+                continue
+            last_err = f"{resp.status_code}: {resp.text[:200]}"
+            break
+        raise requests.exceptions.HTTPError(f"Upload failed after {max_retries} attempts: {last_err}")
 
     def delete_expense(self, expense_id: int) -> Dict:
         """Delete an expense by ID."""
