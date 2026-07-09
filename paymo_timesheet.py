@@ -69,6 +69,16 @@ class PaymoClient:
                     remaining_min = min(remaining_values)
                     if remaining_min < 5:
                         console.print(f"[yellow]⚠ Rate limit: {remaining}/{limit} remaining (resets in {decay}s)[/yellow]")
+                    # Proactive backoff: when we're within 2 of the cap, sleep
+                    # the reported decay period so the *next* caller isn't 429'd.
+                    # Prevents the "one heavy tool starves the next call" pattern
+                    # seen in audit_paymo_expenses and expense-batch filing runs.
+                    if remaining_min <= 1:
+                        try:
+                            wait = int(decay) if decay else 5
+                        except (ValueError, TypeError):
+                            wait = 5
+                        time.sleep(max(1, min(wait, 10)))
                 except ValueError:
                     pass  # Ignore malformed rate limit headers
 
@@ -223,10 +233,39 @@ class PaymoClient:
         return expenses
 
     def create_expense(self, project_id: int, **kwargs) -> Dict:
-        """Create a single expense on a project."""
+        """Create a single expense on a project. Paymo requires client_id in
+        addition to project_id (400 "Missing required params: client_id"
+        otherwise), so callers must pass it. See create_paymo_expense for
+        auto-lookup from project."""
         data = {'project_id': int(project_id), **kwargs}
         r = self._request('POST', 'expenses', json=data)
         return r.get('expenses', [{}])[0] if 'expenses' in r else r
+
+    def upload_expense_file(self, expense_id: int, file_path: str) -> Dict:
+        """Attach a file to an existing expense.
+
+        Paymo's public write endpoint is POST /files with the target expense_id
+        as a form field (verified 2026-07). The multipart PUT /expenses/{id}
+        returns 200 but does not persist the file, so that path is a trap and
+        should not be used. Returns the created file record.
+        """
+        import mimetypes, os
+        p = os.path.expanduser(str(file_path))
+        if not os.path.exists(p):
+            raise ValueError(f"Attachment not found: {p}")
+        mime = mimetypes.guess_type(p)[0] or 'application/octet-stream'
+        # Build a one-off request that omits our JSON Content-Type; requests
+        # will set the multipart boundary correctly.
+        headers = {k: v for k, v in self.session.headers.items() if k.lower() != 'content-type'}
+        with open(p, 'rb') as fh:
+            resp = self.session.post(
+                f"{self.base_url}files",
+                headers=headers,
+                files={'file': (os.path.basename(p), fh, mime)},
+                data={'expense_id': int(expense_id)},
+            )
+        resp.raise_for_status()
+        return resp.json().get('files', [{}])[0] if 'files' in resp.json() else resp.json()
 
     def delete_expense(self, expense_id: int) -> Dict:
         """Delete an expense by ID."""
@@ -2563,19 +2602,26 @@ if MCP_AVAILABLE:
         quantity: float = 1,
         billable: bool = True,
         currency: str = "USD",
+        client_id: Optional[int] = None,
+        attachment_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Create a single expense on a project/matter.
+        Create a single expense on a project/matter, optionally with a file
+        attachment (e.g. an .xlsx expense report).
 
         Args:
             project_id: Paymo project (matter) ID
             name: Short label, e.g. "United - DFW deposition travel"
             date: YYYY-MM-DD (charge date)
             amount: Total expense amount (price * quantity)
-            description: Optional detail (merchant, purpose)
+            description: Optional detail (merchant, purpose) -> `notes` field
             quantity: Default 1; price is derived as amount/quantity
             billable: Default True
             currency: Default USD
+            client_id: Paymo client ID. Auto-looked-up from the project if
+                omitted (Paymo requires this on POST /expenses).
+            attachment_path: Optional local file path (absolute or ~-expanded)
+                to attach after creation. Uploaded via POST /files.
         """
         try:
             project_id = int(project_id)
@@ -2600,10 +2646,23 @@ if MCP_AVAILABLE:
 
         client = PaymoClient(api_key)
 
+        # Paymo requires client_id on POST /expenses; auto-resolve from project
+        if client_id is None:
+            for p in client.get_projects(active_only=False):
+                if p.get('id') == project_id:
+                    client_id = p.get('client_id')
+                    break
+            if client_id is None:
+                raise ValueError(
+                    f"Could not auto-lookup client_id for project {project_id}; "
+                    "pass client_id explicitly."
+                )
+
         # Live shape check (2026-07): Paymo expense records carry `price` and
         # `amount` (equal on unit expenses); `quantity` is not persisted, and
         # the description-like field is `notes`, not `description`.
         payload = {
+            'client_id': int(client_id),
             'name': name,
             'date': date,
             'amount': amount,
@@ -2616,14 +2675,24 @@ if MCP_AVAILABLE:
 
         e = client.create_expense(project_id, **payload)
 
+        attached = None
+        if attachment_path:
+            try:
+                f = client.upload_expense_file(e.get('id'), attachment_path)
+                attached = f.get('original_filename') or True
+            except Exception as err:
+                attached = f"FAILED: {err}"
+
         return {
             'id': e.get('id'),
             'project_id': e.get('project_id'),
+            'client_id': e.get('client_id'),
             'name': e.get('name'),
             'notes': e.get('notes'),
             'date': e.get('date'),
             'amount': e.get('amount'),
             'billable': e.get('billable'),
+            'attachment': attached,
         }
 
     @mcp.tool()
