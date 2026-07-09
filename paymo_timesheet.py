@@ -259,13 +259,20 @@ class PaymoClient:
         if not os.path.exists(p):
             raise ValueError(f"Attachment not found: {p}")
         mime = mimetypes.guess_type(p)[0] or 'application/octet-stream'
-        headers = {k: v for k, v in self.session.headers.items() if k.lower() != 'content-type'}
+        # Use a fresh request (not self.session.post) so the session's
+        # Content-Type: application/json doesn't leak through and override the
+        # multipart boundary that `files=` needs to set. Observed 2026-07:
+        # PDFs were silently rejected with "Decoding failed: Syntax error" when
+        # multipart was overridden by JSON Content-Type.
+        auth = self.session.auth
+        headers = {'Accept': 'application/json'}
 
         last_err = None
         for attempt in range(max_retries):
             with open(p, 'rb') as fh:
-                resp = self.session.post(
+                resp = requests.post(
                     f"{self.base_url}files",
+                    auth=auth,
                     headers=headers,
                     files={'file': (os.path.basename(p), fh, mime)},
                     data={'expense_id': int(expense_id)},
