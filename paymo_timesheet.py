@@ -332,6 +332,17 @@ class PaymoClient:
         response = self._request('GET', f'invoices/{invoice_id}')
         return response.get('invoices', [{}])[0]
 
+    def get_most_recent_invoice(self, client_id: int) -> Optional[Dict]:
+        """Return the most recent invoice for a client (by date desc), or None.
+        Used to lift `title`/`bill_to`/`company_info` from a known-good
+        prior invoice so new invoices don't come out blank."""
+        invs = self.get_invoices(client_id=client_id)
+        if not invs:
+            return None
+        dated = [(inv.get('date') or '', inv) for inv in invs]
+        dated.sort(key=lambda kv: kv[0], reverse=True)
+        return dated[0][1]
+
     def find_invoice_by_number(self, invoice_number: str) -> Optional[Dict]:
         """
         Find invoice by its number (e.g., 'INV-20260331-241' or '#INV-20260331-241')
@@ -352,6 +363,74 @@ class PaymoClient:
             if inv_num == search_num:
                 return inv
         return None
+
+    def create_invoice(self, client_id: int, items: List[Dict],
+                       project_id: Optional[int] = None,
+                       date: Optional[str] = None,
+                       due_date: Optional[str] = None,
+                       number: Optional[str] = None,
+                       currency: str = "USD",
+                       language: Optional[str] = None,
+                       notes: Optional[str] = None,
+                       title: Optional[str] = None,
+                       bill_to: Optional[str] = None,
+                       company_info: Optional[str] = None) -> Dict:
+        """Create an invoice header + line items in one POST.
+
+        Paymo's POST /invoices accepts an `items` array inline; each item
+        creates a linked invoiceitem row and its id comes back in the
+        response under `invoices[0].invoiceitems`. Callers who want to link
+        time entries back to specific items should read those ids from the
+        returned dict.
+
+        Args:
+            client_id: Paymo client id
+            items: list of dicts, each with keys:
+                item          — line title (Paymo's field is `item`, NOT `title`)
+                price_unit    — per-unit price (Paymo's field, NOT `price`)
+                quantity      — units (hours)
+                description?  — optional detail line
+                seq?          — display order (defaults to input order)
+            project_id: Paymo project id — MUST be passed for the invoice
+                to be linked to a project. Verified 2026-07-22 that omitting
+                it produces a valid invoice with project_id=null (orphaned
+                from the project it billed).
+            date: Invoice date YYYY-MM-DD (default: Paymo uses today)
+            due_date: Due date YYYY-MM-DD (default: Paymo uses its template)
+            number: Custom invoice number (default: Paymo auto-generates
+                using the account's numbering template, e.g. INV-YYYYMMDD-###)
+            currency: ISO currency code (default USD)
+            language: Optional invoice language override
+            notes: Optional notes shown on the invoice
+        """
+        data: Dict[str, Any] = {
+            'client_id': int(client_id),
+            'currency': currency,
+            'items': items,
+        }
+        if project_id is not None:
+            data['project_id'] = int(project_id)
+        if date:
+            data['date'] = date
+        if due_date:
+            data['due_date'] = due_date
+        if number:
+            data['number'] = number
+        if language:
+            data['language'] = language
+        if notes:
+            data['notes'] = notes
+        if title is not None:
+            data['title'] = title
+        if bill_to is not None:
+            data['bill_to'] = bill_to
+        if company_info is not None:
+            data['company_info'] = company_info
+
+        # Ask Paymo to echo the created line items so callers can map
+        # entries -> invoice_item_id without a second GET round-trip.
+        r = self._request('POST', 'invoices?include=invoiceitems', json=data)
+        return r.get('invoices', [{}])[0] if 'invoices' in r else r
 
     def get_outstanding_invoices_last_week(self) -> List[Dict]:
         """Get outstanding invoices (sent or viewed) from the last 7 days"""
@@ -1260,6 +1339,67 @@ class TimesheetProcessor:
             return []
 
 
+def resolve_month(spec: str, today: Optional[datetime] = None) -> Tuple[str, str]:
+    """Resolve a loose month spec to a (start_date, end_date) YYYY-MM-DD pair.
+
+    Accepts:
+      - "last" / "previous"      -> previous calendar month
+      - "current" / "this"       -> current calendar month
+      - "YYYY-MM"                -> that specific month
+      - "Month" / "Month YYYY"   -> parsed via dateutil (bare month name
+                                    assumes current year; if that lands in
+                                    the future, rolls back one year — so
+                                    "June" said in Feb 2027 means June 2026)
+
+    Returns (start_date, end_date) — inclusive first/last day of the resolved
+    month, both YYYY-MM-DD. Case-insensitive.
+
+    Raises ValueError if the spec can't be parsed.
+    """
+    if not spec or not str(spec).strip():
+        raise ValueError("month spec is empty")
+    s = str(spec).strip().lower()
+    now = today or datetime.now()
+
+    def _month_bounds(year: int, month: int) -> Tuple[str, str]:
+        start = datetime(year, month, 1)
+        # Last day: jump to next month's 1st, subtract a day.
+        if month == 12:
+            next_start = datetime(year + 1, 1, 1)
+        else:
+            next_start = datetime(year, month + 1, 1)
+        end = next_start - timedelta(days=1)
+        return start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')
+
+    if s in ('last', 'previous', 'prev'):
+        y, m = (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
+        return _month_bounds(y, m)
+    if s in ('current', 'this'):
+        return _month_bounds(now.year, now.month)
+
+    # ISO YYYY-MM
+    if len(s) == 7 and s[4] == '-' and s[:4].isdigit() and s[5:].isdigit():
+        y, m = int(s[:4]), int(s[5:])
+        if not 1 <= m <= 12:
+            raise ValueError(f"month spec {spec!r} has invalid month {m}")
+        return _month_bounds(y, m)
+
+    # Natural language: "June", "Jun 2026", "June 2026"
+    try:
+        parsed = dateparser.parse(spec, default=datetime(now.year, 1, 1))
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"could not parse month spec {spec!r}: {e}")
+    y, m = parsed.year, parsed.month
+    # Bare month name with no year: dateparser used our default year. If that
+    # lands in the future, the user almost certainly meant the most recent
+    # occurrence of that month → roll back one year.
+    digit_run = ''.join(c for c in spec if c.isdigit())
+    has_year = len(digit_run) >= 4
+    if not has_year and datetime(y, m, 1) > datetime(now.year, now.month, 1):
+        y -= 1
+    return _month_bounds(y, m)
+
+
 def load_config() -> Dict:
     """Load configuration from ~/.mcp-config/paymo/ and ~/.mcp-auth/paymo/"""
     config_dir = Path.home() / '.mcp-config' / 'paymo'
@@ -1988,9 +2128,10 @@ if MCP_AVAILABLE:
 
     @mcp.tool()
     def export_paymo_timesheet(
-        start_date: str,
-        end_date: str,
-        project_id: Optional[int] = None
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        project_id: Optional[int] = None,
+        month: Optional[str] = None,
     ) -> str:
         """
         Export timesheet by DATE RANGE as CSV. Use this as a fallback when
@@ -2008,18 +2149,28 @@ if MCP_AVAILABLE:
         - User wants only entries billed on a specific invoice
 
         Args:
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
+            start_date: Start date (YYYY-MM-DD) — omit if using `month`
+            end_date: End date (YYYY-MM-DD) — omit if using `month`
             project_id: Optional - filter to specific project ID
+            month: Shorthand for a calendar month; overrides start/end.
+                Accepts "last", "current", "YYYY-MM", "June", "June 2026", etc.
 
         Returns:
             CSV content with columns: Date, Start Time, End Time, Duration (hours),
             Task, Description, Billed, Entry ID
 
-        Example:
+        Examples:
+            export_paymo_timesheet(month="last")
+            export_paymo_timesheet(month="June", project_id=12345)
             export_paymo_timesheet("2026-03-01", "2026-03-31")
-            export_paymo_timesheet("2026-03-01", "2026-03-31", project_id=12345)
         """
+        if month:
+            if start_date or end_date:
+                raise ValueError("Pass either `month` or `start_date`+`end_date`, not both")
+            start_date, end_date = resolve_month(month)
+        if not (start_date and end_date):
+            raise ValueError("Provide `month` or both `start_date` and `end_date`")
+
         # Convert parameters to proper types (MCP may pass strings)
         if project_id is not None:
             project_id = int(project_id)
@@ -2031,6 +2182,132 @@ if MCP_AVAILABLE:
 
         client = PaymoClient(api_key)
         return client.export_timesheet_csv(start_date, end_date, project_id)
+
+    @mcp.tool()
+    def export_glimpse_timesheet(
+        project_id: int,
+        keystone_project_code: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        month: Optional[str] = None,
+        billable: bool = True,
+        include_billed: bool = True,
+    ) -> str:
+        """
+        Export a Keystone/Glimpse-format CSV timesheet for a date range + project.
+
+        Columns match Keystone's csv-template (submitted through the Glimpse
+        portal):
+            Date, Duration Hours, Comment, Project Code, Billable
+
+        Format details (verified against Keystone's template):
+          - Date:            M/D/YYYY (no zero padding, US format)
+          - Duration Hours:  decimal, 2dp (e.g. "1.00", "0.80")
+          - Comment:         entry description
+          - Project Code:    the code Keystone gave you — applied to every row
+          - Billable:        "true" / "false" (lowercase)
+
+        Every value is double-quoted (matches Keystone's own template).
+        Entries are sorted chronologically. Glimpse keys off the Project Code
+        so the caller MUST get that from Keystone before this can be submitted.
+
+        Args:
+            project_id: Paymo project ID
+            keystone_project_code: The code Keystone gave you for this matter
+            start_date: YYYY-MM-DD — omit if using `month`
+            end_date: YYYY-MM-DD — omit if using `month`
+            month: Shorthand for a calendar month; overrides start/end.
+                Accepts "last", "current", "YYYY-MM", "June", "June 2026", etc.
+            billable: Value for the Billable column (default True)
+            include_billed: If False, only include unbilled entries (default True)
+
+        Returns:
+            CSV content as a string, ready to save + upload to Glimpse.
+
+        Examples:
+            export_glimpse_timesheet(project_id=3482327,
+                keystone_project_code="Meta - McCarthy Tétrault LLP - Clare v Meta - NF",
+                month="June")
+            export_glimpse_timesheet(project_id=3482327,
+                keystone_project_code="...", month="last")
+        """
+        import csv
+        import io as _io
+        import html as _html
+
+        if month:
+            if start_date or end_date:
+                raise ValueError("Pass either `month` or `start_date`+`end_date`, not both")
+            start_date, end_date = resolve_month(month)
+        if not (start_date and end_date):
+            raise ValueError("Provide `month` or both `start_date` and `end_date`")
+
+        project_id = int(project_id)
+
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+
+        # Pull entries and filter to the project. Match export_paymo_timesheet's
+        # date+project semantics so both tools return the same row set.
+        entries = client.get_entries(start_date, end_date)
+        entries = [e for e in entries if e.get('project_id') == project_id]
+        if not include_billed:
+            entries = [e for e in entries if not e.get('billed')]
+
+        # Sort chronologically in local time, mirroring export_invoice_paymo_format.
+        local_tz = pytz.timezone(config.get('timezone', 'America/Chicago'))
+
+        def _entry_local_dt(e):
+            st = e.get('start_time') or ''
+            if st:
+                try:
+                    dt = dateparser.parse(st)
+                    if dt.tzinfo:
+                        return dt.astimezone(local_tz)
+                    return local_tz.localize(dt)
+                except Exception:
+                    pass
+            d = e.get('date') or ''
+            if d:
+                try:
+                    return local_tz.localize(datetime.strptime(d, '%Y-%m-%d'))
+                except Exception:
+                    pass
+            return datetime.min.replace(tzinfo=local_tz)
+
+        entries.sort(key=_entry_local_dt)
+
+        buf = _io.StringIO()
+        writer = csv.writer(buf, quoting=csv.QUOTE_ALL, lineterminator='\n')
+        writer.writerow(['Date', 'Duration Hours', 'Comment', 'Project Code', 'Billable'])
+
+        billable_str = 'true' if billable else 'false'
+        for e in entries:
+            local_dt = _entry_local_dt(e)
+            date_str = f"{local_dt.month}/{local_dt.day}/{local_dt.year}"
+            duration_sec = e.get('duration')
+            if duration_sec is None and e.get('start_time') and e.get('end_time'):
+                s = dateparser.parse(e['start_time'])
+                x = dateparser.parse(e['end_time'])
+                duration_sec = int((x - s).total_seconds())
+            hours = round((duration_sec or 0) / 3600, 2)
+            # Paymo round-trips descriptions through HTML entities (e.g.
+            # &#039; for apostrophe, &#43; for plus). Decode before writing
+            # so the CSV that reaches Glimpse contains readable text.
+            comment = _html.unescape((e.get('description') or '').strip())
+            writer.writerow([
+                date_str,
+                f"{hours:.2f}",
+                comment,
+                keystone_project_code,
+                billable_str,
+            ])
+
+        return buf.getvalue()
 
     @mcp.tool()
     def list_paymo_invoices(client_id: Optional[int] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -2064,6 +2341,391 @@ if MCP_AVAILABLE:
             'total': inv.get('total'),
             'currency': inv.get('currency', 'USD')
         } for inv in invoices]
+
+    @mcp.tool()
+    def create_paymo_invoice(
+        project_id: int,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        month: Optional[str] = None,
+        invoice_date: Optional[str] = None,
+        due_date: Optional[str] = None,
+        number: Optional[str] = None,
+        currency: str = "USD",
+        group_by: str = "matter",
+        rate_override: Optional[float] = None,
+        mark_billed: bool = True,
+        include_unbilled_only: bool = True,
+        notes: Optional[str] = None,
+        title: Optional[str] = None,
+        bill_to: Optional[str] = None,
+        company_info: Optional[str] = None,
+        template_invoice_id: Optional[int] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Create a Paymo invoice for one project's time entries in a date range.
+
+        DEFAULT LAYOUT (group_by="matter"):
+          - ONE line item per invoice, titled with the project name
+            (matches the account's existing template — see e.g. any prior
+            Keystone invoice)
+          - Line item quantity = total hours; price_unit = project rate
+          - Line item description auto-renders the per-task breakdown in
+            Paymo's HTML style:
+              Total Hours: <span style="color: #777777"><em>H hrs M min</em></span>
+
+              <strong>Default Task List</strong>
+              - <Task name> <span style="color: #777777"><em>H hrs M min</em></span>
+
+        HEADER FIELDS:
+          - title / bill_to / company_info auto-copy from the most recent
+            invoice for the same client (so provider + customer blocks
+            match your usual template without hardcoding bank info in
+            source). Pass explicit values to override.
+          - Also settable via `template_invoice_id` to copy from a specific
+            prior invoice.
+
+        WORKFLOW:
+          1. Select entries in [start_date, end_date] on `project_id`
+             (default: unbilled only).
+          2. Group into line items per `group_by` (default "matter").
+          3. Auto-fill title/bill_to/company_info from a template invoice.
+          4. POST invoice + items to Paymo via /invoices.
+          5. If `mark_billed=True`, update each source entry with the
+             surviving invoice-item's id and set billed=true.
+
+        SAFETY:
+          - Set `dry_run=True` first to preview the invoice payload without
+            hitting Paymo. Skips create + link entirely when no entries match.
+
+        Common shortcuts:
+            create_paymo_invoice(project_id=3482327, month="last", dry_run=True)
+            create_paymo_invoice(project_id=3482327, month="June", dry_run=True)
+
+        Args:
+            project_id: Paymo project id to invoice
+            start_date: Range start YYYY-MM-DD (inclusive) — omit if using `month`
+            end_date: Range end YYYY-MM-DD (inclusive) — omit if using `month`
+            month: Shorthand for a calendar month; overrides start/end.
+                Accepts "last", "current", "YYYY-MM", "June", "June 2026", etc.
+            invoice_date: Invoice header date (default: Paymo assigns today)
+            due_date: Payment due date (default: Paymo template)
+            number: Custom invoice number (default: Paymo auto-generates,
+                usually INV-YYYYMMDD-### per account template)
+            currency: ISO currency code (default USD)
+            group_by: "matter" (default) — one line item per matter with
+                       per-task HTML breakdown in the description;
+                      "task" — one line item per task;
+                      "single" — one generic aggregated line
+            rate_override: Override the project's price_per_hour for line
+                items (default: use project rate)
+            mark_billed: Link entries to invoice items + mark billed (default True)
+            include_unbilled_only: Skip already-billed entries (default True)
+            notes: Optional notes shown on the invoice
+            title: Invoice title (default: copied from most recent invoice for
+                this client, usually "INVOICE")
+            bill_to: Customer address block (default: copied from template)
+            company_info: Provider address / bank info block (default: copied)
+            template_invoice_id: Specific prior invoice id to copy header
+                fields from (default: most recent invoice for this client)
+            dry_run: If True, return the planned payload without POSTing
+
+        Returns:
+            Dict with keys:
+              invoice: created invoice (id, number, date, total, ...) —
+                       or {"planned": true, ...} if dry_run
+              line_items: list of {title, hours, price, subtotal, entry_ids}
+              entries_linked: number of entries updated (0 if dry_run or
+                              mark_billed=False)
+              total_hours, total_amount: aggregate figures
+              template_source_invoice_id: which prior invoice's header
+                                          fields were copied (or None)
+        """
+        if month:
+            if start_date or end_date:
+                raise ValueError("Pass either `month` or `start_date`+`end_date`, not both")
+            start_date, end_date = resolve_month(month)
+        if not (start_date and end_date):
+            raise ValueError("Provide `month` or both `start_date` and `end_date`")
+
+        project_id = int(project_id)
+
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+
+        # Resolve the project so we can grab client_id and rate.
+        projects = client.get_projects(active_only=False)
+        project = next((p for p in projects if p.get('id') == project_id), None)
+        if not project:
+            raise ValueError(f"Project {project_id} not found")
+
+        client_id = project.get('client_id')
+        if not client_id:
+            raise ValueError(f"Project {project_id} has no client_id")
+        project_name = project.get('name') or f"Project {project_id}"
+        rate = float(rate_override) if rate_override is not None else float(
+            project.get('price_per_hour') or 0
+        )
+        if rate <= 0:
+            raise ValueError(
+                f"No rate available (project.price_per_hour={project.get('price_per_hour')}); "
+                "pass rate_override"
+            )
+
+        # Fetch entries for the window and filter to this project.
+        entries = client.get_entries(start_date, end_date)
+        entries = [e for e in entries if e.get('project_id') == project_id]
+        if include_unbilled_only:
+            entries = [e for e in entries if not e.get('billed')]
+
+        if not entries:
+            return {
+                'invoice': None,
+                'line_items': [],
+                'entries_linked': 0,
+                'total_hours': 0.0,
+                'total_amount': 0.0,
+                'note': f"No {'unbilled ' if include_unbilled_only else ''}entries "
+                        f"found for project {project_id} in {start_date}..{end_date}",
+            }
+
+        # ---- helpers ----
+        def _hours(e):
+            d = e.get('duration')
+            if d is not None:
+                return d / 3600.0
+            if e.get('start_time') and e.get('end_time'):
+                s = dateparser.parse(e['start_time'])
+                x = dateparser.parse(e['end_time'])
+                return (x - s).total_seconds() / 3600.0
+            return 0.0
+
+        def _fmt_hm(hours: float) -> str:
+            """Paymo-style 'H hrs M min' with hrs-only or min-only shortcuts."""
+            total_min = int(round(hours * 60))
+            h, m = divmod(total_min, 60)
+            if h == 0:
+                return f"{m} min"
+            if m == 0:
+                return f"{h} hrs"
+            return f"{h} hrs {m} min"
+
+        # ---- resolve template header fields ----
+        template_src_id = None
+        if title is None or bill_to is None or company_info is None:
+            tmpl = None
+            if template_invoice_id is not None:
+                tmpl = client.get_invoice(int(template_invoice_id))
+            else:
+                tmpl = client.get_most_recent_invoice(int(client_id))
+            if tmpl:
+                template_src_id = tmpl.get('id')
+                if title is None:
+                    title = tmpl.get('title')
+                if bill_to is None:
+                    bill_to = tmpl.get('bill_to')
+                if company_info is None:
+                    company_info = tmpl.get('company_info')
+
+        # ---- group entries ----
+        groups: List[Dict[str, Any]] = []
+        if group_by in ("matter", "task"):
+            # Both modes need per-task hour aggregations.
+            task_names: Dict[int, str] = {}
+            for tid in {e.get('task_id') for e in entries if e.get('task_id')}:
+                try:
+                    tr = client._request('GET', f'tasks/{tid}')
+                    td = tr.get('tasks', [{}])[0] if 'tasks' in tr else {}
+                    task_names[tid] = td.get('name') or f"Task {tid}"
+                except Exception:
+                    task_names[tid] = f"Task {tid}"
+
+            by_task: Dict[Any, List[Dict]] = {}
+            for e in entries:
+                by_task.setdefault(e.get('task_id'), []).append(e)
+            task_agg = []
+            for tid, es in sorted(
+                by_task.items(),
+                key=lambda kv: min(
+                    (x.get('start_time') or x.get('date') or '') for x in kv[1]
+                ),
+            ):
+                task_agg.append({
+                    'task_id': tid,
+                    'name': task_names.get(tid, f"Task {tid}"),
+                    'hours': round(sum(_hours(e) for e in es), 2),
+                    'entries': es,
+                })
+
+            if group_by == "task":
+                for t in task_agg:
+                    groups.append({
+                        'title': t['name'],
+                        'hours': t['hours'],
+                        'description': None,
+                        'entries': t['entries'],
+                    })
+            else:  # matter mode
+                total = round(sum(t['hours'] for t in task_agg), 2)
+                lines = [
+                    f'Total Hours: <span style="color: #777777"><em>{_fmt_hm(total)}</em></span>',
+                    '',
+                    '<strong>Default Task List</strong>',
+                ]
+                for t in task_agg:
+                    lines.append(
+                        f'- {t["name"]} <span style="color: #777777"><em>{_fmt_hm(t["hours"])}</em></span>'
+                    )
+                groups.append({
+                    'title': project_name,
+                    'hours': total,
+                    'description': '\n'.join(lines),
+                    'entries': [e for t in task_agg for e in t['entries']],
+                })
+        elif group_by == "single":
+            hours = round(sum(_hours(e) for e in entries), 2)
+            groups.append({
+                'title': f"Professional services ({start_date} to {end_date})",
+                'hours': hours,
+                'description': None,
+                'entries': entries,
+            })
+        else:
+            raise ValueError(
+                f"group_by must be 'matter', 'task', or 'single', got {group_by!r}"
+            )
+
+        # ---- assemble Paymo `items` payload ----
+        # Paymo's invoiceitem schema requires `item` for the line title and
+        # `price_unit` for the per-unit price (verified 2026-07-22: passing
+        # `title`/`price` silently persisted only `quantity`, leaving totals
+        # at $0). Also requires `project_id` at invoice level to link to
+        # the source project.
+        items_payload: List[Dict[str, Any]] = []
+        for i, g in enumerate(groups, start=1):
+            item_obj: Dict[str, Any] = {
+                'item': g['title'],
+                'price_unit': rate,
+                'quantity': g['hours'],
+                'seq': i,
+            }
+            if g.get('description'):
+                item_obj['description'] = g['description']
+            items_payload.append(item_obj)
+
+        total_hours = round(sum(g['hours'] for g in groups), 2)
+        total_amount = round(sum(g['hours'] * rate for g in groups), 2)
+
+        # DRY RUN: return the planned payload and stop.
+        if dry_run:
+            return {
+                'invoice': {
+                    'planned': True,
+                    'client_id': client_id,
+                    'project_id': project_id,
+                    'currency': currency,
+                    'date': invoice_date,
+                    'due_date': due_date,
+                    'number': number,
+                    'title': title,
+                    'bill_to': bill_to,
+                    'company_info': company_info,
+                    'items': items_payload,
+                    'notes': notes,
+                },
+                'line_items': [
+                    {
+                        'title': g['title'],
+                        'hours': g['hours'],
+                        'price': rate,
+                        'subtotal': round(g['hours'] * rate, 2),
+                        'entry_ids': [e.get('id') for e in g['entries']],
+                    }
+                    for g in groups
+                ],
+                'entries_linked': 0,
+                'total_hours': total_hours,
+                'total_amount': total_amount,
+                'template_source_invoice_id': template_src_id,
+            }
+
+        # Create the invoice + items in one POST.
+        created = client.create_invoice(
+            client_id=client_id,
+            project_id=project_id,
+            items=items_payload,
+            date=invoice_date,
+            due_date=due_date,
+            number=number,
+            currency=currency,
+            notes=notes,
+            title=title,
+            bill_to=bill_to,
+            company_info=company_info,
+        )
+
+        # Map created invoice items back to their groups by seq.
+        created_items = created.get('invoiceitems') or []
+        created_items_by_seq = {
+            (it.get('seq') if it.get('seq') is not None else idx): it
+            for idx, it in enumerate(created_items)
+        }
+
+        line_items_out: List[Dict[str, Any]] = []
+        entries_linked = 0
+        for i, g in enumerate(groups, start=1):
+            # Paymo's `seq` is 0-indexed on read even though our `seq` param
+            # was 1-indexed on write; try both.
+            item = created_items_by_seq.get(i) or created_items_by_seq.get(i - 1)
+            item_id = item.get('id') if item else None
+            entry_ids = [e.get('id') for e in g['entries']]
+            if mark_billed and item_id:
+                for eid in entry_ids:
+                    try:
+                        client.update_entry(
+                            int(eid),
+                            invoice_item_id=int(item_id),
+                            billed=True,
+                        )
+                        entries_linked += 1
+                    except Exception:
+                        # Don't unwind the invoice on a link failure — surface
+                        # the count so the caller can retry the unlinked ones.
+                        pass
+            line_items_out.append({
+                'title': g['title'],
+                'hours': g['hours'],
+                'price': rate,
+                'subtotal': round(g['hours'] * rate, 2),
+                'invoice_item_id': item_id,
+                'entry_ids': entry_ids,
+            })
+
+        return {
+            'invoice': {
+                'id': created.get('id'),
+                'number': created.get('number'),
+                'date': created.get('date'),
+                'due_date': created.get('due_date'),
+                'status': created.get('status'),
+                'subtotal': created.get('subtotal'),
+                'total': created.get('total'),
+                'currency': created.get('currency', currency),
+                'title': created.get('title'),
+                'bill_to_set': bool(created.get('bill_to')),
+                'company_info_set': bool(created.get('company_info')),
+            },
+            'line_items': line_items_out,
+            'entries_linked': entries_linked,
+            'total_hours': total_hours,
+            'total_amount': total_amount,
+            'template_source_invoice_id': template_src_id,
+        }
 
     @mcp.tool()
     def get_projects_without_recent_invoices(days: int = 30) -> List[Dict[str, Any]]:

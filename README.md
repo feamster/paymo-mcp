@@ -7,6 +7,8 @@ A Model Context Protocol (MCP) server for [Paymo](https://www.paymoapp.com/) tim
 - ✅ **Time Entry Management**: Create and manage time entries via natural language
 - ✅ **Project & Task Discovery**: List and search projects/tasks by name
 - ✅ **Invoice Timesheet Export**: Generate CSV timesheets for specific invoices
+- ✅ **Invoice Creation** (`create_paymo_invoice`): Roll a project's unbilled entries into a Paymo invoice, grouped by task, with a `dry_run` preview and automatic entry↔invoice-item linkage
+- ✅ **Glimpse / Keystone CSV Export** (`export_glimpse_timesheet`): Emit the exact `Date, Duration Hours, Comment, Project Code, Billable` template that Keystone matters submit through the Glimpse portal
 - ✅ **Unbilled Time Analysis**: Track unbilled hours and revenue
 - ✅ **Batch Operations**: Submit multiple entries from YAML format
 - ✅ **Smart Filtering**: Filter entries by project, date range, billing status
