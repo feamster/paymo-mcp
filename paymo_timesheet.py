@@ -390,7 +390,9 @@ class PaymoClient:
                        notes: Optional[str] = None,
                        title: Optional[str] = None,
                        bill_to: Optional[str] = None,
-                       company_info: Optional[str] = None) -> Dict:
+                       company_info: Optional[str] = None,
+                       notification_to: Optional[List[str]] = None,
+                       footer: Optional[str] = None) -> Dict:
         """Create an invoice header + line items in one POST.
 
         Paymo's POST /invoices accepts an `items` array inline; each item
@@ -442,22 +444,30 @@ class PaymoClient:
             data['bill_to'] = bill_to
         if company_info is not None:
             data['company_info'] = company_info
+        if footer is not None:
+            data['footer'] = footer
 
         # Paymo's UI shows the Project column from `options.linked_projects`,
         # NOT from the invoice-level `project_id`. Passing project_id alone
         # leaves the summary view's Project column blank (verified 2026-07-22).
         # Compute the total from the items so linked_projects.amount matches.
+        # `options.notification.to` sets who receives Paymo's send email —
+        # without it Paymo falls back to bill_to but at least one prior
+        # invoice with an empty list didn't route reliably.
+        opts: Dict[str, Any] = {}
         if project_id is not None:
             item_total = sum(
                 float(it.get('price_unit') or 0) * float(it.get('quantity') or 0)
                 for it in items
             )
-            data['options'] = {
-                'linked_projects': [{
-                    'amount': round(item_total, 2),
-                    'project_id': int(project_id),
-                }]
-            }
+            opts['linked_projects'] = [{
+                'amount': round(item_total, 2),
+                'project_id': int(project_id),
+            }]
+        if notification_to:
+            opts['notification'] = {'to': list(notification_to)}
+        if opts:
+            data['options'] = opts
 
         # Ask Paymo to echo the created line items so callers can map
         # entries -> invoice_item_id without a second GET round-trip.
@@ -2392,6 +2402,8 @@ if MCP_AVAILABLE:
         title: Optional[str] = None,
         bill_to: Optional[str] = None,
         company_info: Optional[str] = None,
+        notification_to: Optional[List[str]] = None,
+        footer: Optional[str] = None,
         template_invoice_id: Optional[int] = None,
         dry_run: bool = False,
     ) -> Dict[str, Any]:
@@ -2549,7 +2561,8 @@ if MCP_AVAILABLE:
 
         # ---- resolve template header fields ----
         template_src_id = None
-        if title is None or bill_to is None or company_info is None:
+        if (title is None or bill_to is None or company_info is None
+                or notification_to is None or footer is None):
             tmpl = None
             if template_invoice_id is not None:
                 tmpl = client.get_invoice(int(template_invoice_id))
@@ -2563,6 +2576,14 @@ if MCP_AVAILABLE:
                     bill_to = tmpl.get('bill_to')
                 if company_info is None:
                     company_info = tmpl.get('company_info')
+                if footer is None:
+                    footer = tmpl.get('footer')
+                if notification_to is None:
+                    tmpl_notif = (
+                        (tmpl.get('options') or {}).get('notification') or {}
+                    ).get('to')
+                    if tmpl_notif:
+                        notification_to = list(tmpl_notif)
 
         # ---- group entries ----
         groups: List[Dict[str, Any]] = []
@@ -2667,6 +2688,8 @@ if MCP_AVAILABLE:
                     'title': title,
                     'bill_to': bill_to,
                     'company_info': company_info,
+                    'notification_to': notification_to,
+                    'footer': footer,
                     'items': items_payload,
                     'notes': notes,
                 },
@@ -2699,6 +2722,8 @@ if MCP_AVAILABLE:
             title=title,
             bill_to=bill_to,
             company_info=company_info,
+            notification_to=notification_to,
+            footer=footer,
         )
 
         # Map created invoice items back to their groups by seq.
