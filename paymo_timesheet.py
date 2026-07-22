@@ -343,6 +343,22 @@ class PaymoClient:
         dated.sort(key=lambda kv: kv[0], reverse=True)
         return dated[0][1]
 
+    def send_invoice(self, invoice_id: int) -> Dict:
+        """Send an invoice via Paymo's email flow (POST /invoices/{id}/send).
+
+        This triggers Paymo to email the invoice PDF to the recipient(s)
+        configured on the invoice (options.notification.to, or the account
+        default). It transitions the invoice status from 'draft' to 'sent'
+        (or re-sends if already sent).
+
+        DESTRUCTIVE / CLIENT-VISIBLE: the caller is responsible for user
+        confirmation. `PaymoClient.send_invoice` will send unconditionally
+        every time it's called — the confirmation gate lives in the MCP
+        tool wrapper, not here.
+        """
+        r = self._request('POST', f'invoices/{int(invoice_id)}/send', json={})
+        return r
+
     def find_invoice_by_number(self, invoice_number: str) -> Optional[Dict]:
         """
         Find invoice by its number (e.g., 'INV-20260331-241' or '#INV-20260331-241')
@@ -2741,6 +2757,122 @@ if MCP_AVAILABLE:
             'total_hours': total_hours,
             'total_amount': total_amount,
             'template_source_invoice_id': template_src_id,
+        }
+
+    @mcp.tool()
+    def send_paymo_invoice(
+        invoice_id: int,
+        confirm: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Send a Paymo invoice by email to the recipient(s) on file.
+
+        THIS IS A CLIENT-VISIBLE ACTION. It emails the invoice PDF to the
+        client and transitions status from 'draft' to 'sent'. Wrong amount,
+        wrong matter, wrong recipient = real financial / relationship
+        consequences.
+
+        CONFIRMATION GATE:
+          - `confirm` defaults to False. When False, this tool DOES NOT
+            SEND — it returns a preview of what would be sent so the
+            caller (and the user) can eyeball it.
+          - Only when `confirm=True` is passed does the tool actually POST
+            to Paymo's send endpoint.
+          - Prior approval does NOT carry over between invoices or between
+            sends of the same invoice. Every send needs a fresh confirm=True.
+
+        RECOMMENDED USAGE PATTERN (for LLM callers):
+          1. Call once with confirm=False to fetch the preview.
+          2. Show the preview to the user in full (recipient, amount, PDF
+             link, current status, any warnings).
+          3. Wait for the user to explicitly say "send it" (or equivalent).
+          4. Only then call again with confirm=True.
+          Never invoke with confirm=True in the same message where you
+          first surfaced the tool schema.
+
+        Args:
+            invoice_id: Paymo invoice id (integer, not the "#INV-..." string;
+                use list_paymo_invoices to look it up if needed)
+            confirm: MUST be True to actually send. Default False → preview only.
+
+        Returns:
+            If confirm=False (preview): {
+                'preview': True,
+                'invoice_id', 'invoice_number', 'status',
+                'total', 'currency',
+                'bill_to_emails': [str, ...] (parsed from bill_to block),
+                'notification_to': [str, ...] (from options.notification.to),
+                'pdf_link', 'warning'
+            }
+            If confirm=True: {
+                'sent': True,
+                'invoice_id', 'invoice_number',
+                'previous_status', 'new_status',
+                'total', 'currency',
+                'raw': dict  # Paymo's POST response
+            }
+        """
+        import re
+
+        invoice_id = int(invoice_id)
+
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+        client = PaymoClient(api_key)
+
+        inv = client.get_invoice(invoice_id)
+        if not inv or not inv.get('id'):
+            raise ValueError(f"Invoice {invoice_id} not found")
+
+        bill_to = inv.get('bill_to') or ''
+        bill_to_emails = re.findall(r'[\w.+-]+@[\w.-]+\.[\w-]+', bill_to)
+        options = inv.get('options') or {}
+        notification_to = ((options.get('notification') or {}).get('to')) or []
+
+        status = inv.get('status') or 'unknown'
+        warnings = []
+        if status != 'draft':
+            warnings.append(
+                f"Invoice status is {status!r}, not 'draft' — sending will re-send."
+            )
+        if not (bill_to_emails or notification_to):
+            warnings.append(
+                "No email address on bill_to or options.notification.to — "
+                "Paymo may reject the send."
+            )
+
+        preview = {
+            'preview': True,
+            'invoice_id': invoice_id,
+            'invoice_number': inv.get('number'),
+            'status': status,
+            'total': inv.get('total'),
+            'currency': inv.get('currency', 'USD'),
+            'bill_to_emails': bill_to_emails,
+            'notification_to': notification_to,
+            'pdf_link': inv.get('pdf_link'),
+            'warning': "; ".join(warnings) if warnings else None,
+        }
+
+        if not confirm:
+            return preview
+
+        # SEND — client-visible outbound. Every call requires a fresh
+        # confirm=True; the tool never retains a "yes" across invocations.
+        prev_status = status
+        raw = client.send_invoice(invoice_id)
+        final = client.get_invoice(invoice_id)
+        return {
+            'sent': True,
+            'invoice_id': invoice_id,
+            'invoice_number': final.get('number'),
+            'previous_status': prev_status,
+            'new_status': final.get('status'),
+            'total': final.get('total'),
+            'currency': final.get('currency', 'USD'),
+            'raw': raw,
         }
 
     @mcp.tool()
