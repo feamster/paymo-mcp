@@ -427,6 +427,22 @@ class PaymoClient:
         if company_info is not None:
             data['company_info'] = company_info
 
+        # Paymo's UI shows the Project column from `options.linked_projects`,
+        # NOT from the invoice-level `project_id`. Passing project_id alone
+        # leaves the summary view's Project column blank (verified 2026-07-22).
+        # Compute the total from the items so linked_projects.amount matches.
+        if project_id is not None:
+            item_total = sum(
+                float(it.get('price_unit') or 0) * float(it.get('quantity') or 0)
+                for it in items
+            )
+            data['options'] = {
+                'linked_projects': [{
+                    'amount': round(item_total, 2),
+                    'project_id': int(project_id),
+                }]
+            }
+
         # Ask Paymo to echo the created line items so callers can map
         # entries -> invoice_item_id without a second GET round-trip.
         r = self._request('POST', 'invoices?include=invoiceitems', json=data)
