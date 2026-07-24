@@ -332,6 +332,19 @@ class PaymoClient:
         response = self._request('GET', f'invoices/{invoice_id}')
         return response.get('invoices', [{}])[0]
 
+    def update_invoice(self, invoice_id: int, **kwargs) -> Dict:
+        """Update an existing invoice (status, dates, amounts, notes, etc.).
+
+        Thin PUT wrapper matching the pattern of update_task /
+        update_project / update_entry. Callers pass whatever fields
+        Paymo's PUT /invoices/{id} accepts (verified via docs 2026-07-24
+        at github.com/paymoapp/api/blob/master/sections/invoices.md).
+        Higher-level callers should use `update_paymo_invoice_status` MCP
+        tool for status-only changes because it validates the enum.
+        """
+        response = self._request('PUT', f'invoices/{invoice_id}', json=kwargs)
+        return response.get('invoices', [response])[0] if 'invoices' in response else response
+
     def get_invoice_financials(self, invoice_id: int) -> Dict[str, Any]:
         """Split an invoice into fees vs expenses by reading its line items.
 
@@ -2566,6 +2579,110 @@ if MCP_AVAILABLE:
             'fee_item_count': len(fin['fee_items']),
             'expense_item_count': len(fin['expense_items']),
             'linked_expense_count': len(fin['linked_expenses']),
+        }
+
+    # Paymo invoice status enum, per
+    # github.com/paymoapp/api/blob/master/sections/invoices.md (verified
+    # 2026-07-24). Keep in sync with any Paymo API change.
+    _INVOICE_STATUSES = ('draft', 'sent', 'viewed', 'paid', 'void')
+
+    @mcp.tool()
+    def update_paymo_invoice(
+        invoice_number: str,
+        status: Optional[str] = None,
+        date: Optional[str] = None,
+        due_date: Optional[str] = None,
+        notes: Optional[str] = None,
+        title: Optional[str] = None,
+        bill_to: Optional[str] = None,
+        company_info: Optional[str] = None,
+        footer: Optional[str] = None,
+        currency: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Update fields on an existing Paymo invoice. Pass only the fields
+        you want to change.
+
+        Most common use: `status="paid"` after reconciling payment from a
+        bank statement. Valid statuses: draft, sent, viewed, paid, void.
+        Paymo docs explicitly permit manual status override via PUT
+        /invoices/{id} (verified 2026-07-24), and the change is reversible
+        by calling again with the previous value.
+
+        Other editable fields include date, due_date, notes, and the
+        header text (title / bill_to / company_info / footer).
+
+        Args:
+            invoice_number: Invoice number (with or without # prefix)
+            status: New status, one of: draft, sent, viewed, paid, void
+            date: Invoice date, YYYY-MM-DD
+            due_date: Due date, YYYY-MM-DD
+            notes: Freeform notes on the invoice
+            title: Invoice title / header
+            bill_to: "Bill to" address block
+            company_info: Provider address block
+            footer: Footer text
+            currency: ISO currency code (e.g. USD)
+
+        Returns the updated invoice (trimmed) plus `previous_status`.
+        """
+        payload: Dict[str, Any] = {}
+        if status is not None:
+            status_lower = status.strip().lower()
+            if status_lower not in _INVOICE_STATUSES:
+                raise ValueError(
+                    f"Invalid status {status!r}. Must be one of: "
+                    f"{', '.join(_INVOICE_STATUSES)}."
+                )
+            payload['status'] = status_lower
+        if date is not None:
+            payload['date'] = date
+        if due_date is not None:
+            payload['due_date'] = due_date
+        if notes is not None:
+            payload['notes'] = notes
+        if title is not None:
+            payload['title'] = title
+        if bill_to is not None:
+            payload['bill_to'] = bill_to
+        if company_info is not None:
+            payload['company_info'] = company_info
+        if footer is not None:
+            payload['footer'] = footer
+        if currency is not None:
+            payload['currency'] = currency
+
+        if not payload:
+            raise ValueError(
+                "No fields provided to update. Pass at least one of: "
+                "status, date, due_date, notes, title, bill_to, "
+                "company_info, footer, currency."
+            )
+
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+        invoice = client.find_invoice_by_number(invoice_number)
+        if not invoice:
+            raise ValueError(f"Invoice not found: {invoice_number}")
+
+        updated = client.update_invoice(invoice['id'], **payload)
+        # Trim to the fields callers actually use so we don't dump the
+        # full invoice payload into context.
+        return {
+            'id': updated.get('id'),
+            'number': updated.get('number'),
+            'client_id': updated.get('client_id'),
+            'date': updated.get('date'),
+            'due_date': updated.get('due_date'),
+            'previous_status': invoice.get('status'),
+            'status': updated.get('status'),
+            'total': updated.get('total'),
+            'currency': updated.get('currency', 'USD'),
+            'updated_fields': list(payload.keys()),
         }
 
     @mcp.tool()
