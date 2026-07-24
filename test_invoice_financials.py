@@ -283,5 +283,103 @@ class ExportInvoiceStrictGuardTests(unittest.TestCase):
         self.assertIn('$1,609.23', msg)
 
 
+class UpdateInvoiceTests(unittest.TestCase):
+    """Tests for PaymoClient.update_invoice and the update_paymo_invoice
+    MCP tool. Guards against the two easy footguns: sending an unknown
+    status enum, and PUTting an empty payload."""
+
+    def test_low_level_update_invoice_sends_put_with_kwargs(self):
+        captured = {}
+
+        def fake_request(self, method, endpoint, **kwargs):
+            captured['method'] = method
+            captured['endpoint'] = endpoint
+            captured['json'] = kwargs.get('json')
+            return {'invoices': [{
+                'id': 1234, 'number': 'INV-TEST-999',
+                'status': 'paid', 'due_date': '2026-08-15',
+                'total': 100.0,
+            }]}
+
+        client = PaymoClient(api_key='test')
+        with patch.object(PaymoClient, '_request', fake_request):
+            out = client.update_invoice(1234, status='paid', due_date='2026-08-15')
+
+        self.assertEqual(captured['method'], 'PUT')
+        self.assertEqual(captured['endpoint'], 'invoices/1234')
+        self.assertEqual(captured['json'], {'status': 'paid', 'due_date': '2026-08-15'})
+        self.assertEqual(out['status'], 'paid')
+
+    def test_low_level_update_invoice_handles_bare_dict_response(self):
+        """Paymo occasionally returns the invoice dict directly rather than
+        wrapped in `{'invoices': [...]}`. The wrapper should tolerate both."""
+        def fake_request(self, method, endpoint, **kwargs):
+            return {'id': 1234, 'status': 'void'}
+
+        client = PaymoClient(api_key='test')
+        with patch.object(PaymoClient, '_request', fake_request):
+            out = client.update_invoice(1234, status='void')
+        self.assertEqual(out['status'], 'void')
+
+
+class UpdatePaymoInvoiceToolTests(unittest.TestCase):
+    """Tests for the MCP tool `update_paymo_invoice` itself — enum
+    validation, empty-payload rejection, and multi-field PUT."""
+
+    def _run(self, **kwargs):
+        # The tool is defined inside `if MCP_AVAILABLE:` and exposed at
+        # module scope by the same name — call it directly. Stub
+        # load_config so the tool doesn't touch ~/.mcp-auth for an API key.
+        import paymo_timesheet
+        with patch.object(
+            paymo_timesheet, 'load_config',
+            lambda: {'api_key': 'test'},
+        ):
+            return paymo_timesheet.update_paymo_invoice(**kwargs)
+
+    def test_rejects_invalid_status(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._run(invoice_number='INV-X', status='mostly-paid')
+        self.assertIn('Invalid status', str(ctx.exception))
+
+    def test_rejects_empty_payload(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._run(invoice_number='INV-X')
+        self.assertIn('No fields provided', str(ctx.exception))
+
+    def test_puts_multiple_fields_and_reports_previous_status(self):
+        # Mock the whole request pipeline so we can watch what got PUT.
+        captured = {}
+
+        def fake_request(self, method, endpoint, **kwargs):
+            if method == 'GET' and endpoint.startswith('invoices'):
+                # find_invoice_by_number -> get_invoices
+                return {'invoices': [{
+                    'id': 42, 'number': 'INV-CRA-233',
+                    'status': 'sent', 'due_date': '2026-04-03',
+                    'total': 85924.23,
+                }]}
+            if method == 'PUT' and endpoint == 'invoices/42':
+                captured['put'] = kwargs.get('json')
+                return {'invoices': [{
+                    'id': 42, 'number': 'INV-CRA-233',
+                    'status': 'paid', 'due_date': '2026-05-01',
+                    'total': 85924.23, 'currency': 'USD',
+                }]}
+            raise AssertionError(f"unexpected: {method} {endpoint}")
+
+        with patch.object(PaymoClient, '_request', fake_request):
+            out = self._run(
+                invoice_number='INV-CRA-233',
+                status='paid',
+                due_date='2026-05-01',
+            )
+
+        self.assertEqual(captured['put'], {'status': 'paid', 'due_date': '2026-05-01'})
+        self.assertEqual(out['status'], 'paid')
+        self.assertEqual(out['previous_status'], 'sent')
+        self.assertEqual(sorted(out['updated_fields']), ['due_date', 'status'])
+
+
 if __name__ == '__main__':
     unittest.main()
