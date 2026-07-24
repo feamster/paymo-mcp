@@ -332,6 +332,120 @@ class PaymoClient:
         response = self._request('GET', f'invoices/{invoice_id}')
         return response.get('invoices', [{}])[0]
 
+    def get_invoice_financials(self, invoice_id: int) -> Dict[str, Any]:
+        """Split an invoice into fees vs expenses by reading its line items.
+
+        Paymo has no explicit item-type flag distinguishing an expense line
+        from a fee line — both are just `invoiceitem` rows. The reliable
+        signal is that expense records point back at their invoice line via
+        `expense.invoice_item_id`. So we classify each line item as an
+        expense iff at least one expense record links to it, and everything
+        else as a fee.
+
+        Do NOT compute expenses as `invoice_total - (hours * rate)` — that
+        was the previous approach and it silently reports missing/unlinked
+        time entries as fake expenses (see feedback memory 2026-07-24).
+        """
+        response = self._request(
+            'GET', f'invoices/{invoice_id}?include=invoiceitems'
+        )
+        invoice = response.get('invoices', [{}])[0]
+        items = invoice.get('invoiceitems', []) or []
+        invoice_total = float(invoice.get('total') or 0)
+        invoice_subtotal = float(invoice.get('subtotal') or 0)
+
+        item_id_set = {it.get('id') for it in items if it.get('id')}
+
+        # Collect projects to bound the expense scan. Prefer the invoice's
+        # project_id + options.linked_projects; fall back to an unscoped
+        # scan only if neither is set.
+        project_ids: List[int] = []
+        if invoice.get('project_id'):
+            project_ids.append(invoice.get('project_id'))
+        opts = invoice.get('options') or {}
+        for lp in (opts.get('linked_projects') or []):
+            pid = lp.get('project_id')
+            if pid and pid not in project_ids:
+                project_ids.append(pid)
+
+        # Bound the date window around the invoice date. Expenses linked
+        # to an invoice are almost always within a few months of the
+        # invoice date; ±180 days is generous without pulling the whole
+        # expense table.
+        inv_date_str = invoice.get('date') or ''
+        exp_start: Optional[str] = None
+        exp_end: Optional[str] = None
+        if inv_date_str:
+            try:
+                inv_dt = datetime.strptime(inv_date_str, '%Y-%m-%d')
+                exp_start = (inv_dt - timedelta(days=180)).strftime('%Y-%m-%d')
+                exp_end = (inv_dt + timedelta(days=60)).strftime('%Y-%m-%d')
+            except ValueError:
+                pass
+
+        expense_item_ids: set = set()
+        linked_expenses: List[Dict] = []
+        scan_targets = project_ids if project_ids else [None]
+        for pid in scan_targets:
+            try:
+                exps = self.get_expenses(
+                    project_id=pid,
+                    start_date=exp_start,
+                    end_date=exp_end,
+                )
+            except Exception:
+                exps = []
+            for e in exps:
+                iid = e.get('invoice_item_id')
+                if iid and iid in item_id_set:
+                    expense_item_ids.add(iid)
+                    linked_expenses.append(e)
+
+        def _item_subtotal(it: Dict) -> float:
+            # Prefer Paymo's own subtotal if present; else compute
+            # from price_unit × quantity (the two required fields on write).
+            sub = it.get('subtotal')
+            if sub is not None:
+                try:
+                    return float(sub)
+                except (TypeError, ValueError):
+                    pass
+            try:
+                return float(it.get('price_unit') or 0) * float(it.get('quantity') or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        fee_items = [it for it in items if it.get('id') not in expense_item_ids]
+        expense_items = [it for it in items if it.get('id') in expense_item_ids]
+
+        fees_subtotal = sum(_item_subtotal(it) for it in fee_items)
+        expenses_subtotal = sum(_item_subtotal(it) for it in expense_items)
+        computed_subtotal = fees_subtotal + expenses_subtotal
+
+        # If the invoice carries tax or a discount, `total` differs from
+        # the sum of item subtotals. Scale proportionally so fees+expenses
+        # add back up to `total`.
+        if computed_subtotal > 0 and invoice_total > 0 and abs(invoice_total - computed_subtotal) > 0.01:
+            ratio = invoice_total / computed_subtotal
+            fees_out = round(fees_subtotal * ratio, 2)
+            expenses_out = round(expenses_subtotal * ratio, 2)
+        else:
+            fees_out = round(fees_subtotal, 2)
+            expenses_out = round(expenses_subtotal, 2)
+
+        return {
+            'invoice_id': invoice_id,
+            'invoice_number': invoice.get('number'),
+            'total': invoice_total,
+            'subtotal': invoice_subtotal,
+            'fees': fees_out,
+            'expenses': expenses_out,
+            'fee_items': fee_items,
+            'expense_items': expense_items,
+            'linked_expenses': linked_expenses,
+            'invoice': invoice,
+        }
+
     def get_most_recent_invoice(self, client_id: int) -> Optional[Dict]:
         """Return the most recent invoice for a client (by date desc), or None.
         Used to lift `title`/`bill_to`/`company_info` from a known-good
@@ -635,28 +749,31 @@ class PaymoClient:
                 except Exception:
                     pass
 
-        # Get invoice financial info
-        # Calculate fees from hours × rate, expenses = total - fees
-        invoice_total = invoice.get('total', 0)
+        # Get invoice financial info by reading the invoice's own line items
+        # (fees vs expenses), not by subtracting calculated hours×rate from
+        # the total. See get_invoice_financials() docstring for why.
+        invoice_total = float(invoice.get('total') or 0)
+        financials = self.get_invoice_financials(invoice_id)
+        fees = financials['fees']
+        expenses = financials['expenses']
         calculated_fees = total_hours * hourly_rate if hourly_rate else 0
 
-        # Strict validation: check that calculated fees are close to invoice total
-        if strict and hourly_rate and invoice_total > 0:
-            # Allow for expenses (total - fees) and small rounding differences
-            # The calculated fees should be <= invoice total (fees + expenses = total)
-            # And should be within tolerance of invoice total (expenses shouldn't be huge)
-            fee_ratio = calculated_fees / invoice_total if invoice_total else 0
-
-            if fee_ratio < (1 - tolerance) or calculated_fees > invoice_total * (1 + tolerance):
+        # Strict validation: check that time entries linked to this invoice
+        # actually cover the invoice's fee lines. Compare to `fees`, NOT to
+        # `invoice_total` — the old comparison tripped on every invoice with
+        # any expense on it.
+        if strict and hourly_rate and fees > 0:
+            fee_ratio = calculated_fees / fees if fees else 0
+            if fee_ratio < (1 - tolerance) or calculated_fees > fees * (1 + tolerance):
+                missing = fees - calculated_fees
                 raise ValueError(
-                    f"Invoice total mismatch: calculated fees ${calculated_fees:,.2f} "
-                    f"({total_hours:.2f} hrs × ${hourly_rate}/hr) vs invoice total ${invoice_total:,.2f}. "
-                    f"This may indicate entries are on a different invoice or billing period. "
+                    f"Linked time entries don't cover invoice fees: "
+                    f"{total_hours:.2f} hrs × ${hourly_rate}/hr = ${calculated_fees:,.2f} "
+                    f"vs invoice fees ${fees:,.2f} (expenses ${expenses:,.2f}, total ${invoice_total:,.2f}). "
+                    f"Missing ${missing:,.2f} of fees — likely time entries billed on this "
+                    f"invoice aren't linked via invoice_item_id, or a different rate was used. "
                     f"Use export_paymo_timesheet(start_date, end_date) for date-range export instead."
                 )
-
-        fees = calculated_fees if calculated_fees > 0 else invoice_total
-        expenses = invoice_total - fees if invoice_total > fees else 0
 
         # Build CSV output
         output = io.StringIO()
@@ -894,16 +1011,25 @@ class PaymoClient:
             proj = project_cache.get(entries[0].get('project_id'), {})
             hourly_rate = proj.get('price_per_hour', 0) or 0
 
-        # Strict validation
-        invoice_total = invoice.get('total', 0)
+        # Strict validation: compare against invoice's fee lines (not the
+        # total, which includes expenses). See export_invoice_formatted for
+        # the same fix and the reason.
+        invoice_total = float(invoice.get('total') or 0)
+        financials = self.get_invoice_financials(invoice_id)
+        fees = financials['fees']
+        expenses = financials['expenses']
         calculated_fees = total_hours * hourly_rate if hourly_rate else 0
 
-        if strict and hourly_rate and invoice_total > 0:
-            fee_ratio = calculated_fees / invoice_total if invoice_total else 0
-            if fee_ratio < (1 - tolerance) or calculated_fees > invoice_total * (1 + tolerance):
+        if strict and hourly_rate and fees > 0:
+            fee_ratio = calculated_fees / fees if fees else 0
+            if fee_ratio < (1 - tolerance) or calculated_fees > fees * (1 + tolerance):
+                missing = fees - calculated_fees
                 raise ValueError(
-                    f"Invoice total mismatch: calculated fees ${calculated_fees:,.2f} "
-                    f"({total_hours:.2f} hrs × ${hourly_rate}/hr) vs invoice total ${invoice_total:,.2f}. "
+                    f"Linked time entries don't cover invoice fees: "
+                    f"{total_hours:.2f} hrs × ${hourly_rate}/hr = ${calculated_fees:,.2f} "
+                    f"vs invoice fees ${fees:,.2f} (expenses ${expenses:,.2f}, total ${invoice_total:,.2f}). "
+                    f"Missing ${missing:,.2f} of fees — likely time entries billed on this "
+                    f"invoice aren't linked via invoice_item_id, or a different rate was used. "
                     f"Use export_paymo_timesheet(start_date, end_date) for date-range export instead."
                 )
 
@@ -2344,13 +2470,21 @@ if MCP_AVAILABLE:
         return buf.getvalue()
 
     @mcp.tool()
-    def list_paymo_invoices(client_id: Optional[int] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_paymo_invoices(
+        client_id: Optional[int] = None,
+        status: Optional[str] = None,
+        include_financials: bool = False,
+    ) -> List[Dict[str, Any]]:
         """
-        List Paymo invoices with essential details only
+        List Paymo invoices with essential details only.
 
         Args:
             client_id: Filter by client ID
             status: Filter by status (sent, viewed, paid)
+            include_financials: If True, also fetch each invoice's line
+                items and split `total` into `fees` and `expenses`. This
+                costs one extra GET per invoice (plus expense scan), so
+                only enable when you specifically need the breakdown.
         """
         config = load_config()
         api_key = config.get('api_key')
@@ -2363,18 +2497,76 @@ if MCP_AVAILABLE:
         # Return only essential fields to minimize context usage
         # Keep: identification, client, amounts, dates, status
         # Remove: internal IDs, arrays, detailed line items
-        return [{
-            'id': inv.get('id'),
-            'number': inv.get('number'),
-            'client_id': inv.get('client_id'),
-            'client_name': inv.get('client_name'),
-            'date': inv.get('date'),
-            'due_date': inv.get('due_date'),
-            'status': inv.get('status'),
-            'subtotal': inv.get('subtotal'),
-            'total': inv.get('total'),
-            'currency': inv.get('currency', 'USD')
-        } for inv in invoices]
+        result: List[Dict[str, Any]] = []
+        for inv in invoices:
+            row: Dict[str, Any] = {
+                'id': inv.get('id'),
+                'number': inv.get('number'),
+                'client_id': inv.get('client_id'),
+                'client_name': inv.get('client_name'),
+                'date': inv.get('date'),
+                'due_date': inv.get('due_date'),
+                'status': inv.get('status'),
+                'subtotal': inv.get('subtotal'),
+                'total': inv.get('total'),
+                'currency': inv.get('currency', 'USD'),
+            }
+            if include_financials and inv.get('id'):
+                try:
+                    fin = client.get_invoice_financials(inv['id'])
+                    row['fees'] = fin['fees']
+                    row['expenses'] = fin['expenses']
+                except Exception as e:
+                    row['fees'] = None
+                    row['expenses'] = None
+                    row['financials_error'] = str(e)
+            result.append(row)
+        return result
+
+    @mcp.tool()
+    def get_paymo_invoice_financials(invoice_number: str) -> Dict[str, Any]:
+        """
+        Split one invoice's total into fees vs expenses by reading its line
+        items (not by subtraction).
+
+        Use this when you need to know how much of an invoice is
+        professional fees vs pass-through expenses. The classification
+        follows what's linked to each line item: any line item with at
+        least one expense record pointing to it (via
+        `expense.invoice_item_id`) counts as expenses; everything else
+        counts as fees.
+
+        Returns:
+            {
+                'invoice_id', 'invoice_number',
+                'total', 'subtotal',
+                'fees', 'expenses',
+                'fee_item_count', 'expense_item_count',
+                'linked_expense_count',
+            }
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+        invoice = client.find_invoice_by_number(invoice_number)
+        if not invoice:
+            raise ValueError(f"Invoice not found: {invoice_number}")
+
+        fin = client.get_invoice_financials(invoice['id'])
+        return {
+            'invoice_id': fin['invoice_id'],
+            'invoice_number': fin['invoice_number'],
+            'total': fin['total'],
+            'subtotal': fin['subtotal'],
+            'fees': fin['fees'],
+            'expenses': fin['expenses'],
+            'fee_item_count': len(fin['fee_items']),
+            'expense_item_count': len(fin['expense_items']),
+            'linked_expense_count': len(fin['linked_expenses']),
+        }
 
     @mcp.tool()
     def create_paymo_invoice(
