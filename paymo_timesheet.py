@@ -3916,6 +3916,55 @@ if MCP_AVAILABLE:
         }
 
     @mcp.tool()
+    def add_paymo_expense_attachment(expense_id: int, attachment_path: str) -> Dict:
+        """
+        Attach a file to an EXISTING expense. Paymo supports multiple files per
+        expense — call this once per file. Use list_paymo_expense_files to
+        verify what is actually attached (uploads can fail silently otherwise).
+
+        Args:
+            expense_id: Existing Paymo expense ID
+            attachment_path: Local file path (absolute or ~-expanded)
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+        client = PaymoClient(api_key)
+        f = client.upload_expense_file(int(expense_id), attachment_path)
+        return {
+            'expense_id': int(expense_id),
+            'file_id': f.get('id'),
+            'filename': f.get('original_filename') or f.get('name'),
+            'size': f.get('size'),
+        }
+
+    @mcp.tool()
+    def list_paymo_expense_files(expense_id: int) -> Dict:
+        """
+        List files actually attached to an expense (server-side truth).
+        Use after uploads to verify attachments persisted.
+
+        Args:
+            expense_id: Paymo expense ID
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+        client = PaymoClient(api_key)
+        r = client._request('GET', f'files?where=expense_id={int(expense_id)}')
+        return {
+            'expense_id': int(expense_id),
+            'files': [
+                {'file_id': f.get('id'),
+                 'filename': f.get('original_filename') or f.get('name'),
+                 'size': f.get('size')}
+                for f in r.get('files', [])
+            ],
+        }
+
+    @mcp.tool()
     def delete_paymo_expense(expense_id: int) -> str:
         """
         Delete an expense by ID. Corrections = delete then recreate.
