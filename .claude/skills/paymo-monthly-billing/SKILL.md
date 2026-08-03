@@ -146,60 +146,76 @@ double-counted an entry. Do not silently proceed with `strict=False`.
 If totals check clean, print a one-line confirmation per invoice:
 `✓ <INV-...>  $X,XXX.XX  (CSV hdr $X,XXX.XX / CSV rows $X,XXX.XX)`.
 
-### 6. Audit `notification_to` against past sends
+### 6. Audit recipients — but know the Paymo Send dialog only auto-populates ONE
 
-For each new invoice, fetch the current recipient list and compare against
-who past invoices for the same client/matter went to.
+**Critical Paymo constraint (verified 2026-08-02):** The web UI Send
+Invoice dialog's "Email addresses" field is populated from a **single**
+field on the client record: `clients/{client_id}.email`. It does NOT
+read from:
 
-```
-paymo.preview_paymo_invoice_send(invoice_id=<id>)
-```
+- `invoice.bill_to` (the address block)
+- `invoice.options.notification.to`
+- `clientcontacts` records
 
-Returns `bill_to_emails` (parsed from the address block) and
-`notification_to` (the actual send list from `options.notification.to`).
+`client.email` validates as a single address only — comma-separated,
+semicolon, and JSON arrays all fail with `400 "'…' is not a valid email
+address"`. There is no API path to have multiple recipients auto-appear
+in the Send dialog. Extras must be typed in at Send time (autocomplete
+may surface stored `clientcontacts` after the first letter).
 
-For each client/matter, gather the historical recipient set:
+**What this means for the workflow:**
 
-- **From Paymo** — recent invoices to the same client:
-  `paymo.list_paymo_invoices(client_id=<id>)`, then
-  `paymo.preview_paymo_invoice_send(invoice_id=<id>)` for the last
-  couple to see who they were addressed to.
-- **From email** — actual send history via Spark. Query patterns:
+1. **Get `client.email` right per active matter.** For clients with
+   multiple concurrent matters (e.g. Daignault Iyer has Avatier and
+   Mesh Dynamics with different lead billing contacts), swap
+   `client.email` to the correct primary before the user opens the
+   Send dialog. Use:
+   ```python
+   PaymoClient(...).\_request(
+       'PUT', f'clients/{client_id}',
+       json={'email': 'primary@example.com'},
+   )
+   ```
+2. **Store extras as `clientcontacts`** so they appear in autocomplete
+   when the user types in the Send dialog:
+   ```python
+   PaymoClient(...).\_request(
+       'POST', 'clientcontacts',
+       json={'client_id': cid, 'name': 'Full Name', 'email': 'x@y.com'},
+   )
+   ```
+   Check existing first: `GET clientcontacts?where=client_id=<cid>`.
+3. **Include a "Recipients to add manually" column** in the final
+   summary table (see step 8) listing the extras the user needs to type
+   into the Send dialog for each invoice.
+
+**Audit source of truth for who to send to:**
+
+- **Prior sends via email** (Spark) — authoritative for "who has
+  actually received invoices for this matter":
   ```
-  spark.search_emails(sender_email="feamster@...", query="<matter name>", limit=20)
-  spark.search_emails(query="<invoice number pattern>", limit=20)
+  spark.search_emails(sender_email="feamster", query="<matter>", limit=10)
   ```
-  Look at the `to`/`cc` lists on past send emails to spot recipients that
-  should be on the notification list but aren't (accounting managers,
-  matter aliases, opposing-side counsel, etc.).
+- **Prior `preview_paymo_invoice_send`** on recent same-client invoices
+  shows what `notification_to` and `bill_to_emails` were set to — but
+  those did NOT drive who actually got the email, so treat them as a
+  weak signal only.
 
-Known conventions worth checking (from prior audits — verify each time,
-these can drift):
+Known primary/extras per matter (verify each time — these drift):
 
-| Client / matter | Recipients that should typically be on it |
-|-----------------|--------------------------------------------|
-| Daignault Iyer (any matter) | Devon Porter (accounting manager) in addition to the case DL |
-| Daignault Iyer / Avatier | `avatierlit@daignaultiyer.com` distribution alias |
-| Expert Connect / US v. Huawei | `scresswell@expertconnectlegal.com`, `schung@expertconnectlegal.com` |
-| Keystone Strategy | `keystone.ap@keystonestrategy.com` (accounts payable) |
-| Covington / X Corp v. Apple | `hliu@`, `lzehmer@`, `bsaunders@cov.com` |
+| Client / matter | Primary (`client.email`) | Extras (manual add / autocomplete) |
+|-----------------|--------------------------|-------------------------------------|
+| Daignault Iyer / Mesh Dynamics | `dporter@daignaultiyer.com` | `cpampinella@`, `jcharkow@daignaultiyer.com` |
+| Daignault Iyer / Avatier | `avatierlit@daignaultiyer.com` | (matter-specific — check) |
+| Expert Connect / US v. Huawei | `scresswell@expertconnectlegal.com` | `schung@expertconnectlegal.com` |
+| Covington / X Corp v. Apple | `hliu@cov.com` | `lzehmer@`, `bsaunders@cov.com` |
+| Keystone Strategy (any matter) | `keystone.ap@keystone.com` | *(none — user's confirmed policy is AP-only)* |
+| Aguilar Bentley / Avaya v. Edify | `lbentley@aguilarbentley.com` | *(none)* |
 
-**Do not blindly trust the template inheritance.** `create_paymo_invoice`
-copies `notification_to` from the most recent invoice for the client — if
-that most-recent invoice was for a *different* matter, you may inherit
-the wrong list (this happened in the 2026-07 batch: an Aguilar Bentley
-invoice inherited Keystone's `keystone.ap` from the template chain).
-Always cross-check against past *matter-specific* sends, not just past
-*client* sends.
-
-**Note on the update path**: the current deployed `update_paymo_invoice`
-MCP tool does not expose `notification_to`. To patch it, drop into a
-short Python script using `PaymoClient` from
-`~/src/paymo-mcp/paymo_timesheet.py` and PUT `options.notification.to`
-directly. Preserve everything else in `options` — most importantly
-`linked_projects`. Example scaffolding is in
-`~/.claude/projects/-Users-feamster-Documents-teaching/`'s prior session
-log; adapt rather than reinvent.
+**Do NOT** waste effort updating `invoice.bill_to` or
+`options.notification.to` to "fix" recipient lists — neither field
+drives the Send dialog. This mistake has been made and reproduced with a
+screenshot; don't repeat it.
 
 ### 7. Attach clickable Dropbox share-link footer
 
@@ -227,11 +243,13 @@ exists specifically because local paths went out on invoices once).
 ### 8. Present the summary table
 
 Before handing back to the user, print one table covering every invoice
-in the batch:
+in the batch. **Split recipients into "Primary (auto)" and "Add
+manually"** — the Send dialog only auto-populates the primary:
 
-| Invoice # | Client / Matter | Hours | Total | Recipients (`notification_to`) | Timesheet link | Status |
-|-----------|-----------------|-------|-------|--------------------------------|----------------|--------|
-| INV-…-269 | Aguilar Bentley / Avaya v. Edify | 4.5 | $2,362.50 | lbentley@aguilarbentley.com | `dropbox.com/…` | draft ✓ |
+| Invoice # | Client / Matter | Hours | Total | Primary (auto) | Add manually | Timesheet link | Status |
+|-----------|-----------------|-------|-------|---------------|--------------|----------------|--------|
+| INV-…-269 | Aguilar Bentley / Avaya v. Edify | 4.5 | $2,362.50 | `lbentley@aguilarbentley.com` | — | `dropbox.com/…` | draft ✓ |
+| INV-…-268 | Covington / X v. Apple | 59.5 | $49,104 | `hliu@cov.com` | `lzehmer@cov.com`, `bsaunders@cov.com` | `dropbox.com/…` | draft ✓ |
 
 Include an explicit line: **"Totals reconciled: ✓ N/N invoices match CSV
 timesheet totals."** If any didn't reconcile, list them separately with
@@ -242,9 +260,11 @@ the three totals shown.
 The Paymo API cannot send. Tell the user:
 
 > Draft invoices are ready in Paymo. Please open each in the Paymo web
-> UI and click **Send** — the `notification_to` list above will be the
-> recipients. PDF links are in the summary table if you want to preview
-> first.
+> UI and click **Send**. The **Primary** column above is what
+> auto-populates in the "Email addresses" field. Copy-paste anything
+> from the **Add manually** column into that same field before hitting
+> Send Invoice. Extras are saved as `clientcontacts` so autocomplete
+> should surface them after the first letter.
 
 Do **not** offer to click Send yourself; there is no API for it.
 
@@ -260,6 +280,10 @@ Do **not** offer to click Send yourself; there is no API for it.
   correctly; only worry if you're constructing footers by hand.
 - **Cross-check recipients per matter, not per client.** Template
   inheritance can leak the wrong DL when a client has multiple matters.
+- **Send dialog is single-recipient.** `client.email` drives it; don't
+  waste time editing `bill_to` or `notification_to` to "fix" recipients.
+  Set `client.email` to the correct primary and surface extras in the
+  summary for the user to paste in.
 - **Preserve `options.linked_projects` on any raw PUT.** Blowing it away
   makes the web UI Project column look empty even though `project_id`
   is set.
