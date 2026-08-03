@@ -2598,6 +2598,7 @@ if MCP_AVAILABLE:
         company_info: Optional[str] = None,
         footer: Optional[str] = None,
         currency: Optional[str] = None,
+        project_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Update fields on an existing Paymo invoice. Pass only the fields
@@ -2612,6 +2613,13 @@ if MCP_AVAILABLE:
         Other editable fields include date, due_date, notes, and the
         header text (title / bill_to / company_info / footer).
 
+        `project_id`: Paymo has TWO fields for invoice-project association.
+        The top-level `project_id` is what reports use; the web UI Project
+        column actually renders `options.linked_projects`. When you pass
+        `project_id` here, both are set (linked_projects amount = invoice
+        total). If you set only one, the web UI will look broken. See
+        troubleshooting section of README.md.
+
         Args:
             invoice_number: Invoice number (with or without # prefix)
             status: New status, one of: draft, sent, viewed, paid, void
@@ -2623,6 +2631,8 @@ if MCP_AVAILABLE:
             company_info: Provider address block
             footer: Footer text
             currency: ISO currency code (e.g. USD)
+            project_id: Paymo project id. Also sets options.linked_projects
+                so the web UI Project column stays populated.
 
         Returns the updated invoice (trimmed) plus `previous_status`.
         """
@@ -2652,11 +2662,11 @@ if MCP_AVAILABLE:
         if currency is not None:
             payload['currency'] = currency
 
-        if not payload:
+        if not payload and project_id is None:
             raise ValueError(
                 "No fields provided to update. Pass at least one of: "
                 "status, date, due_date, notes, title, bill_to, "
-                "company_info, footer, currency."
+                "company_info, footer, currency, project_id."
             )
 
         config = load_config()
@@ -2668,6 +2678,19 @@ if MCP_AVAILABLE:
         invoice = client.find_invoice_by_number(invoice_number)
         if not invoice:
             raise ValueError(f"Invoice not found: {invoice_number}")
+
+        if project_id is not None:
+            payload['project_id'] = int(project_id)
+            # linked_projects is what the web UI Project column reads; keep
+            # it in sync with project_id so the invoice list doesn't render
+            # an empty column.
+            existing = client.get_invoice(invoice['id'])
+            opts = dict(existing.get('options') or {})
+            opts['linked_projects'] = [{
+                'amount': round(float(existing.get('total') or 0), 2),
+                'project_id': int(project_id),
+            }]
+            payload['options'] = opts
 
         updated = client.update_invoice(invoice['id'], **payload)
         # Trim to the fields callers actually use so we don't dump the
@@ -2683,6 +2706,135 @@ if MCP_AVAILABLE:
             'total': updated.get('total'),
             'currency': updated.get('currency', 'USD'),
             'updated_fields': list(payload.keys()),
+        }
+
+    # Markers used by generate_invoice_footer_with_share_links to make the
+    # links block idempotent — if the markers are present, replace between
+    # them; otherwise prepend a fresh block above whatever is already there
+    # (bank routing, etc.).
+    _TIMESHEET_LINKS_START = '<!-- timesheet-links-start -->'
+    _TIMESHEET_LINKS_END = '<!-- timesheet-links-end -->'
+
+    @mcp.tool()
+    def generate_invoice_footer_with_share_links(
+        invoice_number: str,
+        timesheet_paths: List[str],
+        keystone_csv_paths: Optional[List[str]] = None,
+        heading: str = "Timesheet Documentation",
+        apply: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Mint Dropbox share links for timesheet/CSV files and splice a
+        clickable "Timesheet Documentation" block into an invoice's footer.
+
+        Local paths are useless to external recipients. This tool takes
+        files inside the user's Dropbox, mints (or reuses) public share
+        URLs, and rewrites the invoice footer so the links render as
+        clickable <a href> anchors in the exported PDF.
+
+        Idempotent: subsequent calls replace the block between
+        <!-- timesheet-links-start --> / <!-- timesheet-links-end -->
+        rather than duplicating it. Any bank-routing block or other
+        content already in the footer is preserved.
+
+        Requires Dropbox OAuth credentials at
+        `~/.mcp-auth/dropbox/auth.json` (app_key, app_secret,
+        refresh_token). See README for setup.
+
+        Args:
+            invoice_number: Invoice number (with or without # prefix)
+            timesheet_paths: Absolute paths to files inside ~/Dropbox.
+                Typically per-project timesheet PDFs/CSVs.
+            keystone_csv_paths: Optional additional CSVs (e.g. Keystone
+                Strategy expense/timesheet exports). Rendered under a
+                subheading.
+            heading: Section heading rendered above the links.
+            apply: If True (default) PUT the new footer to Paymo. If
+                False, return the computed footer without updating.
+
+        Returns dict with:
+            invoice_number, invoice_id, footer (final text),
+            links (map of local_path -> share_url), applied (bool).
+        """
+        if not timesheet_paths and not keystone_csv_paths:
+            raise ValueError("Pass at least one path in timesheet_paths or keystone_csv_paths.")
+
+        # Import lazily so the module still loads if the dropbox SDK is
+        # missing; only this tool needs it.
+        try:
+            from dropbox_share import get_share_links, DropboxAuthError
+        except ImportError as e:
+            raise RuntimeError(
+                "dropbox_share helper not importable. Install the dropbox "
+                "SDK (pip install dropbox) and ensure dropbox_share.py is "
+                "on the Python path alongside paymo_timesheet.py."
+            ) from e
+
+        # Validate paths exist before we touch the network.
+        all_paths: List[str] = list(timesheet_paths or [])
+        all_paths.extend(keystone_csv_paths or [])
+        missing = [p for p in all_paths if not Path(p).expanduser().exists()]
+        if missing:
+            raise ValueError(f"Path(s) do not exist: {missing}")
+
+        try:
+            links = get_share_links(all_paths)
+        except DropboxAuthError as e:
+            raise RuntimeError(str(e)) from e
+
+        def _anchor_list(paths: List[str]) -> str:
+            items = []
+            for p in paths:
+                url = links[str(p)]
+                name = Path(p).name
+                items.append(f'<li><a href="{url}">{name}</a></li>')
+            return '<ul>' + ''.join(items) + '</ul>'
+
+        block_parts = [f'<p><strong>{heading}</strong></p>']
+        if timesheet_paths:
+            block_parts.append(_anchor_list(list(timesheet_paths)))
+        if keystone_csv_paths:
+            block_parts.append('<p><em>Supporting CSVs</em></p>')
+            block_parts.append(_anchor_list(list(keystone_csv_paths)))
+        block = (
+            _TIMESHEET_LINKS_START
+            + ''.join(block_parts)
+            + _TIMESHEET_LINKS_END
+        )
+
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+        invoice = client.find_invoice_by_number(invoice_number)
+        if not invoice:
+            raise ValueError(f"Invoice not found: {invoice_number}")
+        existing = client.get_invoice(invoice['id'])
+        existing_footer = existing.get('footer') or ''
+
+        if _TIMESHEET_LINKS_START in existing_footer and _TIMESHEET_LINKS_END in existing_footer:
+            start_idx = existing_footer.index(_TIMESHEET_LINKS_START)
+            end_idx = existing_footer.index(_TIMESHEET_LINKS_END) + len(_TIMESHEET_LINKS_END)
+            new_footer = existing_footer[:start_idx] + block + existing_footer[end_idx:]
+        else:
+            # Prepend so links appear above any bank-routing block already
+            # in the footer.
+            sep = '' if not existing_footer else '<br/>'
+            new_footer = block + sep + existing_footer
+
+        applied = False
+        if apply:
+            client.update_invoice(invoice['id'], footer=new_footer)
+            applied = True
+
+        return {
+            'invoice_number': invoice.get('number'),
+            'invoice_id': invoice['id'],
+            'footer': new_footer,
+            'links': links,
+            'applied': applied,
         }
 
     @mcp.tool()

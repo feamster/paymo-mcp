@@ -8,6 +8,8 @@ A Model Context Protocol (MCP) server for [Paymo](https://www.paymoapp.com/) tim
 - ✅ **Project & Task Discovery**: List and search projects/tasks by name
 - ✅ **Invoice Timesheet Export**: Generate CSV timesheets for specific invoices
 - ✅ **Invoice Creation** (`create_paymo_invoice`): Roll a project's unbilled entries into a Paymo invoice, grouped by task, with a `dry_run` preview and automatic entry↔invoice-item linkage
+- ✅ **Invoice Updates** (`update_paymo_invoice`): Edit status, dates, header/footer text, or project association on an existing invoice
+- ✅ **Clickable Dropbox Footer Links** (`generate_invoice_footer_with_share_links`): Mint Dropbox share URLs for timesheet/CSV files and splice a clickable "Timesheet Documentation" block into an invoice's footer (idempotent, preserves existing bank-routing block)
 - ⚠️ **Invoice Send Preview** (`preview_paymo_invoice_send`): Paymo's REST API has **no send endpoint** — sending must happen through the Paymo web UI. This tool returns everything needed to eyeball an invoice (recipient, amount, PDF link, warnings) before clicking Send in the web app
 - ✅ **Glimpse / Keystone CSV Export** (`export_glimpse_timesheet`): Emit the exact `Date, Duration Hours, Comment, Project Code, Billable` template that Keystone matters submit through the Glimpse portal
 - ✅ **Unbilled Time Analysis**: Track unbilled hours and revenue
@@ -53,12 +55,45 @@ Configuration is split between non-sensitive settings and auth:
 }
 ```
 
-### Getting Your API Key
+**`~/.mcp-auth/dropbox/auth.json`** (only needed for `generate_invoice_footer_with_share_links`):
+```json
+{
+  "app_key": "your-dropbox-app-key",
+  "app_secret": "your-dropbox-app-secret",
+  "refresh_token": "your-long-lived-refresh-token",
+  "scope": "account_info.read files.metadata.read sharing.read sharing.write"
+}
+```
+
+Recommended: put these files under a cloud-synced folder (e.g. `~/Library/CloudStorage/Box-Box/mcp-auth/`) and symlink `~/.mcp-auth/paymo` and `~/.mcp-auth/dropbox` to that location so credentials sync across machines. `chmod 600` on the JSON files.
+
+### Getting Your Paymo API Key
 
 1. Log into Paymo
 2. Go to Settings → API
 3. Generate a new API key
 4. Copy the key to your config file
+
+### Getting Dropbox OAuth Credentials
+
+The Dropbox integration uses the refresh-token flow — one browser authorization lasts indefinitely (short-lived `sl.*` tokens are auto-renewed by the SDK). Setup:
+
+1. Create an app at <https://www.dropbox.com/developers/apps>: **Scoped access**, **Full Dropbox** (or **App folder** if you only need one folder), give it a name.
+2. Under **Permissions**, enable: `account_info.read`, `files.metadata.read`, `sharing.read`, `sharing.write`. Submit.
+3. Under **Settings**, copy the **App key** and **App secret**.
+4. Visit the authorize URL (replace `<APP_KEY>`):
+   ```
+   https://www.dropbox.com/oauth2/authorize?client_id=<APP_KEY>&response_type=code&token_access_type=offline
+   ```
+   Click **Allow**, copy the authorization code.
+5. Exchange the code for a refresh token:
+   ```bash
+   curl https://api.dropboxapi.com/oauth2/token \
+     -d code=<CODE> \
+     -d grant_type=authorization_code \
+     -u <APP_KEY>:<APP_SECRET>
+   ```
+   The response contains `refresh_token` — save all three (`app_key`, `app_secret`, `refresh_token`) into `~/.mcp-auth/dropbox/auth.json` with the schema shown above.
 
 ## Usage
 
@@ -211,6 +246,54 @@ List Paymo invoices with optional filters.
 Get outstanding invoices from the last 7 days.
 
 **Returns:** List of recent invoices with status "sent" or "viewed".
+
+#### `update_paymo_invoice(invoice_number, status=None, date=None, due_date=None, notes=None, title=None, bill_to=None, company_info=None, footer=None, currency=None, project_id=None)`
+Update fields on an existing Paymo invoice. Pass only the fields you want to change.
+
+**Args:**
+- `invoice_number` (str): Invoice number (with or without `#` prefix)
+- `status` (str, optional): New status; one of `draft`, `sent`, `viewed`, `paid`, `void`
+- `date` / `due_date` (str, optional): YYYY-MM-DD
+- `notes`, `title`, `bill_to`, `company_info`, `footer` (str, optional): Header/footer text
+- `currency` (str, optional): ISO code (e.g. `USD`)
+- `project_id` (int, optional): Paymo project id. Also sets `options.linked_projects` so the web UI Project column stays populated. See troubleshooting for why both are needed.
+
+**Returns:** Trimmed updated invoice dict with `previous_status` and `updated_fields`.
+
+**Common uses:**
+- Mark paid after bank reconciliation: `update_paymo_invoice("INV-...", status="paid")`
+- Fix an invoice whose Project column renders empty: `update_paymo_invoice("INV-...", project_id=3482327)`
+
+#### `generate_invoice_footer_with_share_links(invoice_number, timesheet_paths, keystone_csv_paths=None, heading="Timesheet Documentation", apply=True)`
+Mint Dropbox share URLs for timesheet/CSV files inside `~/Dropbox` and splice a clickable "Timesheet Documentation" block into an invoice's footer. Renders as `<a href>` anchor tags → PDF link annotations in the exported invoice.
+
+**Args:**
+- `invoice_number` (str): Invoice number (with or without `#` prefix)
+- `timesheet_paths` (List[str]): Absolute paths to files inside `~/Dropbox` (per-project timesheet PDFs/CSVs)
+- `keystone_csv_paths` (List[str], optional): Additional CSVs rendered under a subheading (e.g. Keystone Strategy exports)
+- `heading` (str): Section heading; default `"Timesheet Documentation"`
+- `apply` (bool): If True (default) PUT the new footer to Paymo; if False return the computed footer without updating
+
+**Returns:** `{invoice_number, invoice_id, footer, links: {local_path: share_url}, applied}`
+
+**Behavior:**
+- **Idempotent** — subsequent calls replace the block between `<!-- timesheet-links-start -->` / `<!-- timesheet-links-end -->` markers instead of duplicating.
+- **Preserves existing footer content** (bank routing block, etc.) by splicing rather than replacing.
+- **Reuses existing share links** via `sharing_list_shared_links(direct_only=True)` — safe to call repeatedly, won't create duplicate links.
+- Requires `~/.mcp-auth/dropbox/auth.json` (see Configuration).
+
+**Example:**
+```python
+generate_invoice_footer_with_share_links(
+    invoice_number="INV-20260706-123",
+    timesheet_paths=[
+        "/Users/me/Dropbox/Invoices/2026-07/ClientA_timesheet.pdf",
+    ],
+    keystone_csv_paths=[
+        "/Users/me/Dropbox/Invoices/2026-07/keystone_hours.csv",
+    ],
+)
+```
 
 #### `export_invoice_timesheet(invoice_number: str, strict: bool = True)`
 Export a formatted, billing-ready timesheet CSV for a specific invoice. **This is the primary tool for generating invoice timesheets.**
@@ -474,6 +557,23 @@ The script will automatically wait and retry. If you see this frequently, reduce
 
 Some invoices may not have time entries (flat fee or expense-only invoices). Verify the invoice includes time entries in Paymo.
 
+### Invoice "Project" column is empty in the Paymo web UI
+
+Paymo invoices have **two** fields for project association:
+
+1. `project_id` (top-level) — the canonical link; reports and analytics use this.
+2. `options.linked_projects: [{amount, project_id}]` — what the **web UI Project column** actually renders.
+
+If you set only `project_id`, the Project column in the invoices list view is empty and clients see something that looks broken. `create_paymo_invoice` wires both automatically. When patching an invoice built by another tool, use `update_paymo_invoice(invoice_number, project_id=...)` — it sets both.
+
+### Dropbox: `DropboxAuthError: Dropbox auth not found`
+
+`generate_invoice_footer_with_share_links` needs `~/.mcp-auth/dropbox/auth.json` with `app_key`, `app_secret`, and `refresh_token`. See the "Getting Dropbox OAuth Credentials" section under Configuration for setup.
+
+### Dropbox: `expired_access_token` or `invalid_access_token`
+
+The SDK is initialized with the long-lived refresh token and mints short-lived access tokens on demand — you should not see this. If you do, your refresh token was revoked (Dropbox admin action or you removed the app). Re-run the OAuth setup and overwrite `refresh_token` in the auth file.
+
 ## Development
 
 ### Project Structure
@@ -481,6 +581,7 @@ Some invoices may not have time entries (flat fee or expense-only invoices). Ver
 ```
 paymo-mcp/
 ├── paymo_timesheet.py  # Main script (CLI + MCP server)
+├── dropbox_share.py    # Dropbox OAuth + share-link helper (used by generate_invoice_footer_with_share_links)
 ├── requirements.txt    # Python dependencies
 └── README.md          # This file
 ```
