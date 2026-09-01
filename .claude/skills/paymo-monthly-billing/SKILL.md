@@ -98,15 +98,27 @@ Capture the returned `invoice.number` (e.g. `INV-20260802-269`) and
 
 Paymo has *two* project associations on an invoice: top-level `project_id`
 and `options.linked_projects`. The web UI Project column renders from
-`linked_projects`. `create_paymo_invoice` sets both, but if you ever
-create/modify by other paths, patch it via:
+`linked_projects`. **Verified 2026-09-01: `create_paymo_invoice` does NOT
+actually set `linked_projects`** (despite earlier claims) — every new
+invoice needs a post-create patch or the Project column shows empty.
 
+If the MCP `update_paymo_invoice` tool in use has no `project_id` param,
+patch via raw PUT — and **`linked_projects` items MUST be objects**:
+
+```python
+# ~/src/paymo-mcp: PaymoClient(api_key from ~/.mcp-auth/paymo/auth.json)
+cur = c._request('GET', f'invoices/{inv_id}')['invoices'][0]
+opts = cur.get('options') or {}
+opts['linked_projects'] = [{'amount': invoice_total, 'project_id': proj_id}]
+c._request('PUT', f'invoices/{inv_id}', json={'project_id': proj_id, 'options': opts})
 ```
-paymo.update_paymo_invoice(
-    invoice_number="<INV-...>",
-    project_id=<id>,     # sets both fields
-)
-```
+
+**HARD-WON (2026-09-01):** writing bare int IDs (`linked_projects: [123]`)
+is silently accepted by the API but **crashes the web UI invoices summary
+page** — it will not render at all until the shape is fixed. Always copy
+the object schema from a known-good invoice before writing. Related: Paymo
+auto-escapes `=`/`&` inside footer hrefs to `&#61;`/`&amp;` on write, so
+sending raw URLs in footers is safe.
 
 ### 5. Export timesheets to Dropbox and reconcile totals
 
