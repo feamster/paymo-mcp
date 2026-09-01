@@ -667,11 +667,11 @@ class PaymoClient:
         inv_date = invoice.get('date', '')
         if inv_date:
             inv_dt = datetime.strptime(inv_date, '%Y-%m-%d')
-            start_date = (inv_dt - timedelta(days=90)).strftime('%Y-%m-%d')
+            start_date = (inv_dt - timedelta(days=365)).strftime('%Y-%m-%d')
             end_date = inv_date
         else:
             now = datetime.now()
-            start_date = (now - timedelta(days=90)).strftime('%Y-%m-%d')
+            start_date = (now - timedelta(days=365)).strftime('%Y-%m-%d')
             end_date = now.strftime('%Y-%m-%d')
 
         all_entries = self.get_entries(start_date, end_date)
@@ -918,11 +918,11 @@ class PaymoClient:
         inv_date = invoice.get('date', '')
         if inv_date:
             inv_dt = datetime.strptime(inv_date, '%Y-%m-%d')
-            start_date = (inv_dt - timedelta(days=90)).strftime('%Y-%m-%d')
+            start_date = (inv_dt - timedelta(days=365)).strftime('%Y-%m-%d')
             end_date = inv_date
         else:
             now = datetime.now()
-            start_date = (now - timedelta(days=90)).strftime('%Y-%m-%d')
+            start_date = (now - timedelta(days=365)).strftime('%Y-%m-%d')
             end_date = now.strftime('%Y-%m-%d')
 
         all_entries = self.get_entries(start_date, end_date)
