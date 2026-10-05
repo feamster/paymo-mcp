@@ -3179,6 +3179,44 @@ if MCP_AVAILABLE:
             footer=footer,
         )
 
+        # Belt-and-suspenders: Paymo's POST /invoices has repeatedly been
+        # observed to NOT persist options.linked_projects even when we send
+        # it in the create payload (verified 2026-10-05 after the Sept
+        # billing run — Project column rendered blank for 4 freshly-created
+        # invoices). Immediately re-PUT linked_projects using the invoice's
+        # actual stored total so the web UI Project column always renders.
+        # Idempotent; failure here must not unwind the invoice.
+        inv_id = created.get('id')
+        if inv_id and project_id is not None:
+            try:
+                refreshed = client.get_invoice(int(inv_id)) or created
+                cur_opts = dict(refreshed.get('options') or {})
+                linked = cur_opts.get('linked_projects') or []
+                needs_patch = not any(
+                    isinstance(lp, dict)
+                    and lp.get('project_id') == int(project_id)
+                    for lp in linked
+                )
+                if needs_patch:
+                    inv_total = round(
+                        float(refreshed.get('total') or total_amount), 2
+                    )
+                    cur_opts['linked_projects'] = [{
+                        'amount': inv_total,
+                        'project_id': int(project_id),
+                    }]
+                    client._request(
+                        'PUT',
+                        f'invoices/{inv_id}',
+                        json={
+                            'project_id': int(project_id),
+                            'options': cur_opts,
+                        },
+                    )
+            except Exception:
+                # Cosmetic fix only — don't fail the create on this.
+                pass
+
         # Map created invoice items back to their groups by seq.
         created_items = created.get('invoiceitems') or []
         created_items_by_seq = {
