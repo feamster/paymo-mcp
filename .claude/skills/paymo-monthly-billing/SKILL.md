@@ -98,12 +98,29 @@ Capture the returned `invoice.number` (e.g. `INV-20260802-269`) and
 
 Paymo has *two* project associations on an invoice: top-level `project_id`
 and `options.linked_projects`. The web UI Project column renders from
-`linked_projects`. **Verified 2026-09-01: `create_paymo_invoice` does NOT
-actually set `linked_projects`** (despite earlier claims) — every new
-invoice needs a post-create patch or the Project column shows empty.
+`linked_projects`.
 
-If the MCP `update_paymo_invoice` tool in use has no `project_id` param,
-patch via raw PUT — and **`linked_projects` items MUST be objects**:
+**Fixed 2026-10-05: `create_paymo_invoice` now self-patches
+`options.linked_projects` immediately after the POST.** Paymo's create
+endpoint silently drops `options.linked_projects` even when sent in the
+create payload — this burned the September run with 4 invoices rendering
+an empty Project column, so the tool now re-PUTs the field defensively
+right after create. Normal workflow: no action needed in this step.
+Verify after creating a batch by eyeballing the Paymo invoices list; the
+Project column should be populated.
+
+If you ever observe a blank Project column again (API behavior changes,
+the defensive patch fails silently, etc.), the manual backstop:
+
+```
+paymo.update_paymo_invoice(invoice_number="<INV-...>", project_id=<id>)
+```
+
+This MCP tool sets both top-level `project_id` and the correct
+`options.linked_projects` object schema in a single call.
+
+If `update_paymo_invoice` is also unavailable, patch via raw PUT — and
+**`linked_projects` items MUST be objects**:
 
 ```python
 # ~/src/paymo-mcp: PaymoClient(api_key from ~/.mcp-auth/paymo/auth.json)
