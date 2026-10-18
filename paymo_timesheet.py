@@ -1573,10 +1573,31 @@ def resolve_month(spec: str, today: Optional[datetime] = None) -> Tuple[str, str
     return _month_bounds(y, m)
 
 
+def _read_json_file(path: Path) -> Optional[Dict]:
+    """Read a JSON file, returning None if it is missing, unreadable or malformed.
+
+    ~/.mcp-config is a symlink into ~/Documents on this machine, which macOS
+    protects with TCC. A process without a Documents grant gets EPERM rather
+    than ENOENT, and Path.exists() does not reliably distinguish the two. The
+    config file is optional, so never let that take the server down.
+    """
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        print(f"paymo: cannot read {path}: {exc}", file=sys.stderr)
+        return None
+    except json.JSONDecodeError as exc:
+        print(f"paymo: malformed JSON in {path}: {exc}", file=sys.stderr)
+        return None
+
+
 def load_config() -> Dict:
     """Load configuration from ~/.mcp-config/paymo/ and ~/.mcp-auth/paymo/"""
-    config_dir = Path.home() / '.mcp-config' / 'paymo'
-    auth_dir = Path.home() / '.mcp-auth' / 'paymo'
+    config_dir = Path(os.environ.get('PAYMO_CONFIG_DIR') or Path.home() / '.mcp-config' / 'paymo')
+    auth_dir = Path(os.environ.get('PAYMO_AUTH_DIR') or Path.home() / '.mcp-auth' / 'paymo')
 
     # Start with defaults
     config = {
@@ -1584,21 +1605,18 @@ def load_config() -> Dict:
         'projects': {}
     }
 
-    # Load non-sensitive config
-    config_path = config_dir / 'config.json'
-    if config_path.exists():
-        with open(config_path, 'r') as f:
-            config.update(json.load(f))
+    # Load non-sensitive config. Optional: defaults above are a complete config.
+    file_config = _read_json_file(config_dir / 'config.json')
+    if file_config:
+        config.update(file_config)
 
     # Load API key from auth
     auth_path = auth_dir / 'auth.json'
-    if auth_path.exists():
-        with open(auth_path, 'r') as f:
-            auth_data = json.load(f)
-            config['api_key'] = auth_data.get('api_key')
+    auth_data = _read_json_file(auth_path)
+    if auth_data and auth_data.get('api_key'):
+        config['api_key'] = auth_data['api_key']
     else:
-        console.print(f"[yellow]Warning: Auth file not found at {auth_path}[/yellow]")
-        console.print("[yellow]Will prompt for API key if needed[/yellow]")
+        print(f"paymo: no API key at {auth_path}; will prompt if needed", file=sys.stderr)
 
     return config
 
