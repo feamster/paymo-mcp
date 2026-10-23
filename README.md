@@ -9,10 +9,12 @@ This server is installed and registered for Claude Code and Claude Desktop by
 along with all the other MCP servers:
 
 ```bash
-cd ~/src/dotfiles && git pull && ./setup-mcp.sh
+cd ~/dotfiles && git pull && ./setup-mcp.sh
 ```
 
-Then restart Claude Code and Claude Desktop. The script clones or pulls every server repo into
+Then restart Claude Code and Claude Desktop. (More detail, including upgrading an older Mac: the
+[laptop-setup README](https://github.com/feamster/laptop-setup#upgrading-another-macs-mcp-servers).)
+The script clones or pulls every server repo into
 `~/src`, builds each environment from its `uv.lock`, writes the config, and checks that each server
 starts. It's safe to re-run anytime.
 
