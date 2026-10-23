@@ -30,7 +30,7 @@ console = Console(file=io.StringIO() if _is_mcp_mode else sys.stdout, quiet=_is_
 # MCP Server support (optional)
 MCP_AVAILABLE = False
 try:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
     MCP_AVAILABLE = True
 except ImportError:
     pass
@@ -1855,7 +1855,7 @@ def export_timesheet(start: str, end: str, project_id: Optional[int], output: Op
 
 # MCP Server Implementation
 if MCP_AVAILABLE:
-    mcp = FastMCP("Paymo Timesheet Manager")
+    mcp = MCPServer("Paymo Timesheet Manager")
 
     @mcp.tool()
     def list_paymo_clients(include_inactive: bool = False) -> List[Dict[str, Any]]:

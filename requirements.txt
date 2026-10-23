@@ -6,5 +6,5 @@ rich>=13.0.0
 click>=8.0.0
 dropbox>=11.0.0
 
-# Optional: for MCP server functionality
-# fastmcp>=0.1.0
+# MCP server
+mcp>=2.3,<3
