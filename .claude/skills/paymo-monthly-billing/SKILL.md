@@ -234,12 +234,12 @@ Known primary/extras per matter (verify each time — these drift):
 
 | Client / matter | Primary (`client.email`) | Extras (manual add / autocomplete) |
 |-----------------|--------------------------|-------------------------------------|
-| Daignault Iyer / Mesh Dynamics | `<redacted-contact>` | `cpampinella@`, `<redacted-contact>` |
-| Daignault Iyer / Avatier | `<redacted-contact>` | (matter-specific — check) |
-| Expert Connect / US v. Huawei | `<redacted-contact>` | `<redacted-contact>` |
-| Covington / X Corp v. Apple | `<redacted-contact>` | `lzehmer@`, `<redacted-contact>` |
-| Keystone Strategy (any matter) | `<redacted-contact>` | *(none — user's confirmed policy is AP-only)* |
-| Aguilar Bentley / Avaya v. Edify | `<redacted-contact>` | *(none)* |
+| Daignault Iyer / Mesh Dynamics | `<see billing-contacts memory>` | `<see billing-contacts memory>`, `<see billing-contacts memory>` |
+| Daignault Iyer / Avatier | `<see billing-contacts memory>` | (matter-specific — check) |
+| Expert Connect / US v. Huawei | `<see billing-contacts memory>` | `<see billing-contacts memory>` |
+| Covington / X Corp v. Apple | `<see billing-contacts memory>` | `<see billing-contacts memory>`, `<see billing-contacts memory>` |
+| Keystone Strategy (any matter) | `<see billing-contacts memory>` | *(none — user's confirmed policy is AP-only)* |
+| Aguilar Bentley / Avaya v. Edify | `<see billing-contacts memory>` | *(none)* |
 
 **Do NOT** waste effort updating `invoice.bill_to` or
 `options.notification.to` to "fix" recipient lists — neither field
@@ -277,8 +277,8 @@ manually"** — the Send dialog only auto-populates the primary:
 
 | Invoice # | Client / Matter | Hours | Total | Primary (auto) | Add manually | Timesheet link | Status |
 |-----------|-----------------|-------|-------|---------------|--------------|----------------|--------|
-| INV-…-269 | Aguilar Bentley / Avaya v. Edify | 4.5 | $X,XXX.XX | `<redacted-contact>` | — | `dropbox.com/…` | draft ✓ |
-| INV-…-268 | Covington / X v. Apple | 59.5 | $X,XXX.XX | `<redacted-contact>` | `<redacted-contact>`, `<redacted-contact>` | `dropbox.com/…` | draft ✓ |
+| INV-…-269 | Aguilar Bentley / Avaya v. Edify | 4.5 | $X,XXX.XX | `<see billing-contacts memory>` | — | `dropbox.com/…` | draft ✓ |
+| INV-…-268 | Covington / X v. Apple | 59.5 | $X,XXX.XX | `<see billing-contacts memory>` | `<see billing-contacts memory>`, `<see billing-contacts memory>` | `dropbox.com/…` | draft ✓ |
 
 Include an explicit line: **"Totals reconciled: ✓ N/N invoices match CSV
 timesheet totals."** If any didn't reconcile, list them separately with

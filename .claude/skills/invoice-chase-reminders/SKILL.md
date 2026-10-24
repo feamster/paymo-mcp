@@ -114,12 +114,12 @@ NOT the Send-dialog address.
 
 | Matter | Chase: To | Chase: Cc | Notes |
 |--------|-----------|-----------|-------|
-| NYT v. OpenAI (Keystone) | `<redacted-contact>`, `<redacted-contact>`, `<redacted-contact>` | — | NOT `<redacted-contact>` (that's the Send-dialog AP box, not the chase channel) |
-| X Corp. v. Apple (Covington) | `<redacted-contact>` | `<redacted-contact>` | Nick coordinates through Cornerstone (consulting firm), who talks to Covington counsel. NOT `<redacted-contact>`. |
-| MDL v. Meta (Kellogg Hansen) | `<redacted-contact>` (the billing partner) | — | Evan is prompt; keep tone cordial. |
-| Avaya v. Edify (Aguilar Bentley) | `<redacted-contact>` (the AP contact) | `<redacted-contact>` | Jennifer handles AP; Lisa is the attorney. |
-| Mesh v. Cisco (Daignault Iyer) | `<redacted-contact>` (the billing contact) | `<redacted-contact>`, `<redacted-contact>` | Same client as Avatier — different lead. |
-| Avatier v. Microsoft (Daignault Iyer) | `<redacted-contact>` | matter-specific — check prior thread |  |
+| NYT v. OpenAI (Keystone) | `<see billing-contacts memory>`, `<see billing-contacts memory>`, `<see billing-contacts memory>` | — | NOT `<see billing-contacts memory>` (that's the Send-dialog AP box, not the chase channel) |
+| X Corp. v. Apple (Covington) | `<see billing-contacts memory>` | `<see billing-contacts memory>` | Nick coordinates through Cornerstone (consulting firm), who talks to Covington counsel. NOT `<see billing-contacts memory>`. |
+| MDL v. Meta (Kellogg Hansen) | `<see billing-contacts memory>` (the billing partner) | — | Evan is prompt; keep tone cordial. |
+| Avaya v. Edify (Aguilar Bentley) | `<see billing-contacts memory>` (the AP contact) | `<see billing-contacts memory>` | Jennifer handles AP; Lisa is the attorney. |
+| Mesh v. Cisco (Daignault Iyer) | `<see billing-contacts memory>` (the billing contact) | `<see billing-contacts memory>`, `<see billing-contacts memory>` | Same client as Avatier — different lead. |
+| Avatier v. Microsoft (Daignault Iyer) | `<see billing-contacts memory>` | matter-specific — check prior thread |  |
 
 If a matter isn't in this table, derive the chase channel from the most
 recent prior reminder thread; failing that, ask Nick.
@@ -207,7 +207,7 @@ anything miscategorized before he sends.
   Starting fresh forces AP to re-explain.
 - **Chase channel ≠ Send-dialog address.** Especially for Keystone
   (`keystone.ap` is the Send AP box; actual humans at the matter are
-  Max/Arzu/Junsu) and X v. Apple (Send goes to `<redacted-contact>`; chase
+  Max/Arzu/Junsu) and X v. Apple (Send goes to `<see billing-contacts memory>`; chase
   goes through Chanel at Cornerstone). Mixing these up delays payment
   because the Send-address AP boxes don't own escalations.
 - **Attribute invoices to matters correctly** when a client has multiple
