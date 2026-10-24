@@ -64,8 +64,8 @@ Evidence sources, by payer:
 | Daignault Iyer (Mesh, Avatier) | **Melio ACH** | `spark.search_emails(sender_email="service@meliopayments.com", query="<client name>")` — look for `Get paid instantly by X` (initiated) and `Your payment from X` (delivered). Reference the `invoice number` field in the email body. |
 | Keystone Strategy | **Check by mail** | `spark.search_emails(query="payment received <matter>")` or search for prior "Payment received" threads Nick has written confirming receipt. |
 | Covington / Cornerstone | **ACH** | `spark.search_emails(query="<INV-number>")` — Chanel/Rui typically confirm when payment went out. Monthly chase thread tracks what's cleared. |
-| Aguilar Bentley | **Check by mail** (the AP contact processes) | Nick usually tells you directly which invoice was paid; cross-check with recent "paid" markings in Paymo for the client. |
-| Kellogg Hansen (the billing partner) | **Wire** | Prior chase thread replies from Evan name which specific invoices cleared. |
+| Aguilar Bentley | **Check by mail** | Nick usually tells you directly which invoice was paid; cross-check with recent "paid" markings in Paymo for the client. |
+| Kellogg Hansen | **Wire** | Prior chase thread replies name which specific invoices cleared. |
 
 **Melio-specific pattern:** Melio sends TWO emails per payment:
 - `Get paid instantly by X` → sent when payer schedules the transfer (ETA 3–6 days)
@@ -116,9 +116,9 @@ NOT the Send-dialog address.
 |--------|-----------|-----------|-------|
 | NYT v. OpenAI (Keystone) | `<see billing-contacts memory>`, `<see billing-contacts memory>`, `<see billing-contacts memory>` | — | NOT `<see billing-contacts memory>` (that's the Send-dialog AP box, not the chase channel) |
 | X Corp. v. Apple (Covington) | `<see billing-contacts memory>` | `<see billing-contacts memory>` | Nick coordinates through Cornerstone (consulting firm), who talks to Covington counsel. NOT `<see billing-contacts memory>`. |
-| MDL v. Meta (Kellogg Hansen) | `<see billing-contacts memory>` (the billing partner) | — | Evan is prompt; keep tone cordial. |
-| Avaya v. Edify (Aguilar Bentley) | `<see billing-contacts memory>` (the AP contact) | `<see billing-contacts memory>` | Jennifer handles AP; Lisa is the attorney. |
-| Mesh v. Cisco (Daignault Iyer) | `<see billing-contacts memory>` (the billing contact) | `<see billing-contacts memory>`, `<see billing-contacts memory>` | Same client as Avatier — different lead. |
+| MDL v. Meta (Kellogg Hansen) | `<see billing-contacts memory>` | — | This contact is prompt; keep tone cordial. |
+| Avaya v. Edify (Aguilar Bentley) | `<see billing-contacts memory>` | `<see billing-contacts memory>` | One contact handles AP; the other is the attorney. |
+| Mesh v. Cisco (Daignault Iyer) | `<see billing-contacts memory>` | `<see billing-contacts memory>`, `<see billing-contacts memory>` | Same client as Avatier — different lead. |
 | Avatier v. Microsoft (Daignault Iyer) | `<see billing-contacts memory>` | matter-specific — check prior thread |  |
 
 If a matter isn't in this table, derive the chase channel from the most
@@ -149,7 +149,7 @@ length, and format conventions. Common patterns worth preserving:
   conversational.
 - **Length target: 5–8 lines of body.** More than that reads impatient.
 - **Specific to the contact's recent behavior:**
-  - If they've been prompt (the billing partner, the billing contact): warm and brief.
+  - If they've been prompt (see billing-contacts memory): warm and brief.
   - If a specific invoice was skipped in a prior payment run (OpenAI 251):
     call that out explicitly so AP doesn't miss it again.
   - If multiple invoices are outstanding and the matter has settled, frame
@@ -207,7 +207,7 @@ anything miscategorized before he sends.
   Starting fresh forces AP to re-explain.
 - **Chase channel ≠ Send-dialog address.** Especially for Keystone
   (`keystone.ap` is the Send AP box; actual humans at the matter are
-  Max/Arzu/Junsu) and X v. Apple (Send goes to `<see billing-contacts memory>`; chase
+  the engagement managers) and X v. Apple (Send goes to `<see billing-contacts memory>`; chase
   goes through Chanel at Cornerstone). Mixing these up delays payment
   because the Send-address AP boxes don't own escalations.
 - **Attribute invoices to matters correctly** when a client has multiple
