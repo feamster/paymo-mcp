@@ -135,10 +135,10 @@ length, and format conventions. Common patterns worth preserving:
 
 - **Fixed-width invoice table.** Nick's chases use aligned columns:
   ```
-    INV-YYYYMMDD-NNN    06/02/2026    $X,XXX.XX
+    INV-YYYYMMDD-NNN    06/02/2026    $XX,XXX.XX
     INV-YYYYMMDD-NNN    09/01/2026     $X,XXX.XX
 
-    Total:                            $X,XXX.XX
+    Total:                            $XX,XXX.XX
   ```
   Two spaces of leading indent; dates in `MM/DD/YYYY`; totals right-aligned
   under the amount column.
