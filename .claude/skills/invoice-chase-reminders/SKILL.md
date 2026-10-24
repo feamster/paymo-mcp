@@ -112,17 +112,21 @@ Paymo drives who gets the invoice when Nick clicks Send; chase mail
 usually goes to an escalation contact or AP coordinator at the same firm,
 NOT the Send-dialog address.
 
-| Matter | Chase: To | Chase: Cc | Notes |
-|--------|-----------|-----------|-------|
-| NYT v. OpenAI (Keystone) | `<see billing-contacts memory>`, `<see billing-contacts memory>`, `<see billing-contacts memory>` | — | NOT `<see billing-contacts memory>` (that's the Send-dialog AP box, not the chase channel) |
-| X Corp. v. Apple (Covington) | `<see billing-contacts memory>` | `<see billing-contacts memory>` | Nick coordinates through Cornerstone (consulting firm), who talks to Covington counsel. NOT `<see billing-contacts memory>`. |
-| MDL v. Meta (Kellogg Hansen) | `<see billing-contacts memory>` | — | This contact is prompt; keep tone cordial. |
-| Avaya v. Edify (Aguilar Bentley) | `<see billing-contacts memory>` | `<see billing-contacts memory>` | One contact handles AP; the other is the attorney. |
-| Mesh v. Cisco (Daignault Iyer) | `<see billing-contacts memory>` | `<see billing-contacts memory>`, `<see billing-contacts memory>` | Same client as Avatier — different lead. |
-| Avatier v. Microsoft (Daignault Iyer) | `<see billing-contacts memory>` | matter-specific — check prior thread |  |
+Call `list_paymo_client_contacts` for the addresses. Paymo is the source of
+truth and the contacts carry `is_main`, `position` and `notes`; never hardcode
+an address here.
 
-If a matter isn't in this table, derive the chase channel from the most
-recent prior reminder thread; failing that, ask Nick.
+What Paymo cannot tell you, and what to apply on top of it:
+
+| Client | Routing rule |
+|--------|--------------|
+| Keystone | Chase the engagement managers, not the AP box. The AP address is the Send-dialog destination only; a reminder sent there goes nowhere useful. |
+| Covington (X Corp. v. Apple) | Nick bills through Cornerstone, the consulting firm, who talk to Covington counsel. Chase Cornerstone, not Covington directly. |
+| Daignault Iyer | Several matters share this client with different leads. Pick the contact whose `position`/`notes` match the matter; the Avatier matter has its own litigation address. |
+| Aguilar Bentley | One contact is AP (`is_main`), the other is the attorney. Chase AP, Cc the attorney. |
+
+If the right channel still isn't obvious, derive it from the most recent prior
+reminder thread; failing that, ask Nick.
 
 ### 5. Match prior tone
 
@@ -207,7 +211,7 @@ anything miscategorized before he sends.
   Starting fresh forces AP to re-explain.
 - **Chase channel ≠ Send-dialog address.** Especially for Keystone
   (`keystone.ap` is the Send AP box; actual humans at the matter are
-  the engagement managers) and X v. Apple (Send goes to `<see billing-contacts memory>`; chase
+  the engagement managers) and X v. Apple (Send goes to the address from `list_paymo_client_contacts`; chase
   goes through Chanel at Cornerstone). Mixing these up delays payment
   because the Send-address AP boxes don't own escalations.
 - **Attribute invoices to matters correctly** when a client has multiple

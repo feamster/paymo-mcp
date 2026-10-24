@@ -109,6 +109,14 @@ class PaymoClient:
         response = self._request('GET', endpoint)
         return response.get('clients', [])
 
+    def get_client_contacts(self, client_id: Optional[int] = None) -> List[Dict]:
+        """List client contacts, optionally for one client."""
+        endpoint = "clientcontacts"
+        if client_id is not None:
+            endpoint += f"?where=client_id={client_id}"
+        response = self._request('GET', endpoint)
+        return response.get('clientcontacts', [])
+
     def create_client(self, name: str, **kwargs) -> Dict:
         """Create a new client"""
         data = {'name': name, **kwargs}
@@ -1879,6 +1887,37 @@ if MCP_AVAILABLE:
             'name': c.get('name'),
             'active': c.get('active', True)
         } for c in clients]
+
+    @mcp.tool()
+    def list_paymo_client_contacts(client_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        List billing contacts for Paymo clients - who invoices go to and who to chase.
+
+        Paymo is the source of truth for these addresses; do not hardcode them
+        anywhere. Call this instead.
+
+        Args:
+            client_id: Optional. Limit to one client; omit for all clients.
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+
+        client = PaymoClient(api_key)
+        contacts = client.get_client_contacts(client_id=client_id)
+        names = {c.get('id'): c.get('name') for c in client.get_clients(active_only=False)}
+
+        return [{
+            'id': c.get('id'),
+            'client_id': c.get('client_id'),
+            'client_name': names.get(c.get('client_id')),
+            'name': c.get('name'),
+            'email': c.get('email'),
+            'position': c.get('position'),
+            'is_main': c.get('is_main'),
+            'notes': c.get('notes'),
+        } for c in contacts]
 
     @mcp.tool()
     def create_paymo_client(
