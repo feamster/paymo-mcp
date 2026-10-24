@@ -275,8 +275,8 @@ manually"** — the Send dialog only auto-populates the primary:
 
 | Invoice # | Client / Matter | Hours | Total | Primary (auto) | Add manually | Timesheet link | Status |
 |-----------|-----------------|-------|-------|---------------|--------------|----------------|--------|
-| INV-…-NNN | Client B / Matter D | 4.5 | $X,XXX.XX | the address from `list_paymo_client_contacts` | — | `dropbox.com/…` | draft ✓ |
-| INV-…-NNN | Client C / Matter A | 59.5 | $X,XXX.XX | the address from `list_paymo_client_contacts` | the address from `list_paymo_client_contacts`, the address from `list_paymo_client_contacts` | `dropbox.com/…` | draft ✓ |
+| INV-…-NNN | Client A / Matter one | 4.5 | $X,XXX.XX | the address from `list_paymo_client_contacts` | — | `dropbox.com/…` | draft ✓ |
+| INV-…-NNN | Client B / Matter two | 59.5 | $XX,XXX.XX | the address from `list_paymo_client_contacts` | the address from `list_paymo_client_contacts`, the address from `list_paymo_client_contacts` | `dropbox.com/…` | draft ✓ |
 
 Include an explicit line: **"Totals reconciled: ✓ N/N invoices match CSV
 timesheet totals."** If any didn't reconcile, list them separately with
