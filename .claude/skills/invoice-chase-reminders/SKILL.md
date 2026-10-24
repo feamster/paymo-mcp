@@ -153,7 +153,7 @@ length, and format conventions. Common patterns worth preserving:
   conversational.
 - **Length target: 5–8 lines of body.** More than that reads impatient.
 - **Specific to the contact's recent behavior:**
-  - If they've been prompt (see billing-contacts memory): warm and brief.
+  - If the contact has a history of paying promptly (check `notes` on the Paymo contact): warm and brief.
   - If a specific invoice was skipped in a prior payment run (OpenAI 251):
     call that out explicitly so AP doesn't miss it again.
   - If multiple invoices are outstanding and the matter has settled, frame
