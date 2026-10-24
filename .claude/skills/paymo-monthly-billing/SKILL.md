@@ -230,16 +230,14 @@ may surface stored `clientcontacts` after the first letter).
   those did NOT drive who actually got the email, so treat them as a
   weak signal only.
 
-Known primary/extras per matter (verify each time — these drift):
+Get the addresses from `list_paymo_client_contacts` (optionally with
+`client_id`) rather than from a table here. It returns `email`, `name`,
+`position`, `is_main` and `notes` per contact, which is enough to pick the
+primary and the extras.
 
-| Client / matter | Primary (`client.email`) | Extras (manual add / autocomplete) |
-|-----------------|--------------------------|-------------------------------------|
-| Client D / Matter F | `<see billing-contacts memory>` | `<see billing-contacts memory>`, `<see billing-contacts memory>` |
-| Client D / Matter E | `<see billing-contacts memory>` | (matter-specific — check) |
-| Client E / Matter H | `<see billing-contacts memory>` | `<see billing-contacts memory>` |
-| Client C / Matter A | `<see billing-contacts memory>` | `<see billing-contacts memory>`, `<see billing-contacts memory>` |
-| Client K (any matter) | `<see billing-contacts memory>` | *(none — user's confirmed policy is AP-only)* |
-| Client B / Matter D | `<see billing-contacts memory>` | *(none)* |
+Two things Paymo does not encode: Client K is AP-only by Nick's confirmed
+policy, so no extras; and Client D carries several matters under one
+client, so match the contact to the matter rather than taking `is_main`.
 
 **Do NOT** waste effort updating `invoice.bill_to` or
 `options.notification.to` to "fix" recipient lists — neither field
@@ -277,8 +275,8 @@ manually"** — the Send dialog only auto-populates the primary:
 
 | Invoice # | Client / Matter | Hours | Total | Primary (auto) | Add manually | Timesheet link | Status |
 |-----------|-----------------|-------|-------|---------------|--------------|----------------|--------|
-| INV-…-NNN | Client B / Matter D | 4.5 | $X,XXX.XX | `<see billing-contacts memory>` | — | `dropbox.com/…` | draft ✓ |
-| INV-…-NNN | Client C / Matter A | 59.5 | $X,XXX.XX | `<see billing-contacts memory>` | `<see billing-contacts memory>`, `<see billing-contacts memory>` | `dropbox.com/…` | draft ✓ |
+| INV-…-NNN | Client B / Matter D | 4.5 | $X,XXX.XX | the address from `list_paymo_client_contacts` | — | `dropbox.com/…` | draft ✓ |
+| INV-…-NNN | Client C / Matter A | 59.5 | $X,XXX.XX | the address from `list_paymo_client_contacts` | the address from `list_paymo_client_contacts`, the address from `list_paymo_client_contacts` | `dropbox.com/…` | draft ✓ |
 
 Include an explicit line: **"Totals reconciled: ✓ N/N invoices match CSV
 timesheet totals."** If any didn't reconcile, list them separately with
