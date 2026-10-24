@@ -64,8 +64,8 @@ Evidence sources, by payer:
 | Client D (Matter F, Matter E) | **Melio ACH** | `spark.search_emails(sender_email="service@meliopayments.com", query="<client name>")` — look for `Get paid instantly by X` (initiated) and `Your payment from X` (delivered). Reference the `invoice number` field in the email body. |
 | Client K | **Check by mail** | `spark.search_emails(query="payment received <matter>")` or search for prior "Payment received" threads Nick has written confirming receipt. |
 | Client C / the consulting firm | **ACH** | `spark.search_emails(query="<INV-number>")` — the consulting team typically confirm when payment went out. Monthly chase thread tracks what's cleared. |
-| Client B | **Check by mail** (the AP contact processes) | Nick usually tells you directly which invoice was paid; cross-check with recent "paid" markings in Paymo for the client. |
-| Client L (the billing partner) | **Wire** | Prior chase thread replies from the billing partner name which specific invoices cleared. |
+| Client B | **Check by mail** | Nick usually tells you directly which invoice was paid; cross-check with recent "paid" markings in Paymo for the client. |
+| Client L | **Wire** | Prior chase thread replies name which specific invoices cleared. |
 
 **Melio-specific pattern:** Melio sends TWO emails per payment:
 - `Get paid instantly by X` → sent when payer schedules the transfer (ETA 3–6 days)
@@ -116,9 +116,9 @@ NOT the Send-dialog address.
 |--------|-----------|-----------|-------|
 | Matter G (Client K) | `<see billing-contacts memory>`, `<see billing-contacts memory>`, `<see billing-contacts memory>` | — | NOT `<see billing-contacts memory>` (that's the Send-dialog AP box, not the chase channel) |
 | Matter A (Client C) | `<see billing-contacts memory>` | `<see billing-contacts memory>` | Nick coordinates through the consulting firm (consulting firm), who talks to Client C counsel. NOT `<see billing-contacts memory>`. |
-| Matter C (Client L) | `<see billing-contacts memory>` (the billing partner) | — | the billing partner is prompt; keep tone cordial. |
-| Matter D (Client B) | `<see billing-contacts memory>` (the AP contact) | `<see billing-contacts memory>` | One contact handles AP; the other is the attorney. |
-| Matter F (Client D) | `<see billing-contacts memory>` (the billing contact) | `<see billing-contacts memory>`, `<see billing-contacts memory>` | Same client as Matter E — different lead. |
+| Matter C (Client L) | `<see billing-contacts memory>` | — | This contact is prompt; keep tone cordial. |
+| Matter D (Client B) | `<see billing-contacts memory>` | `<see billing-contacts memory>` | One contact handles AP; the other is the attorney. |
+| Matter F (Client D) | `<see billing-contacts memory>` | `<see billing-contacts memory>`, `<see billing-contacts memory>` | Same client as Matter E — different lead. |
 | Matter E (Client D) | `<see billing-contacts memory>` | matter-specific — check prior thread |  |
 
 If a matter isn't in this table, derive the chase channel from the most
@@ -149,7 +149,7 @@ length, and format conventions. Common patterns worth preserving:
   conversational.
 - **Length target: 5–8 lines of body.** More than that reads impatient.
 - **Specific to the contact's recent behavior:**
-  - If they've been prompt (the billing partner, the billing contact): warm and brief.
+  - If they've been prompt (see billing-contacts memory): warm and brief.
   - If a specific invoice was skipped in a prior payment run (invoice NNN):
     call that out explicitly so AP doesn't miss it again.
   - If multiple invoices are outstanding and the matter has settled, frame
