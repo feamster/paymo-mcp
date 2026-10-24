@@ -114,12 +114,12 @@ NOT the Send-dialog address.
 
 | Matter | Chase: To | Chase: Cc | Notes |
 |--------|-----------|-----------|-------|
-| Matter G (Client K) | `<redacted-contact>`, `<redacted-contact>`, `<redacted-contact>` | — | NOT `<redacted-contact>` (that's the Send-dialog AP box, not the chase channel) |
-| Matter A (Client C) | `<redacted-contact>` | `<redacted-contact>` | Nick coordinates through the consulting firm (consulting firm), who talks to Client C counsel. NOT `<redacted-contact>`. |
-| Matter C (Client L) | `<redacted-contact>` (the billing partner) | — | the billing partner is prompt; keep tone cordial. |
-| Matter D (Client B) | `<redacted-contact>` (the AP contact) | `<redacted-contact>` | One contact handles AP; the other is the attorney. |
-| Matter F (Client D) | `<redacted-contact>` (the billing contact) | `<redacted-contact>`, `<redacted-contact>` | Same client as Matter E — different lead. |
-| Matter E (Client D) | `<redacted-contact>` | matter-specific — check prior thread |  |
+| Matter G (Client K) | `<see billing-contacts memory>`, `<see billing-contacts memory>`, `<see billing-contacts memory>` | — | NOT `<see billing-contacts memory>` (that's the Send-dialog AP box, not the chase channel) |
+| Matter A (Client C) | `<see billing-contacts memory>` | `<see billing-contacts memory>` | Nick coordinates through the consulting firm (consulting firm), who talks to Client C counsel. NOT `<see billing-contacts memory>`. |
+| Matter C (Client L) | `<see billing-contacts memory>` (the billing partner) | — | the billing partner is prompt; keep tone cordial. |
+| Matter D (Client B) | `<see billing-contacts memory>` (the AP contact) | `<see billing-contacts memory>` | One contact handles AP; the other is the attorney. |
+| Matter F (Client D) | `<see billing-contacts memory>` (the billing contact) | `<see billing-contacts memory>`, `<see billing-contacts memory>` | Same client as Matter E — different lead. |
+| Matter E (Client D) | `<see billing-contacts memory>` | matter-specific — check prior thread |  |
 
 If a matter isn't in this table, derive the chase channel from the most
 recent prior reminder thread; failing that, ask Nick.
@@ -207,7 +207,7 @@ anything miscategorized before he sends.
   Starting fresh forces AP to re-explain.
 - **Chase channel ≠ Send-dialog address.** Especially for Client K
   (`client-k.ap` is the Send AP box; actual humans at the matter are
-  the engagement managers) and Matter A (Send goes to `<redacted-contact>`; chase
+  the engagement managers) and Matter A (Send goes to `<see billing-contacts memory>`; chase
   goes through the consulting team at the consulting firm). Mixing these up delays payment
   because the Send-address AP boxes don't own escalations.
 - **Attribute invoices to matters correctly** when a client has multiple

@@ -234,12 +234,12 @@ Known primary/extras per matter (verify each time — these drift):
 
 | Client / matter | Primary (`client.email`) | Extras (manual add / autocomplete) |
 |-----------------|--------------------------|-------------------------------------|
-| Client D / Matter F | `<redacted-contact>` | `<contact>@`, `<redacted-contact>` |
-| Client D / Matter E | `<redacted-contact>` | (matter-specific — check) |
-| Client E / Matter H | `<redacted-contact>` | `<redacted-contact>` |
-| Client C / Matter A | `<redacted-contact>` | `<contact>@`, `<redacted-contact>` |
-| Client K (any matter) | `<redacted-contact>` | *(none — user's confirmed policy is AP-only)* |
-| Client B / Matter D | `<redacted-contact>` | *(none)* |
+| Client D / Matter F | `<see billing-contacts memory>` | `<see billing-contacts memory>`, `<see billing-contacts memory>` |
+| Client D / Matter E | `<see billing-contacts memory>` | (matter-specific — check) |
+| Client E / Matter H | `<see billing-contacts memory>` | `<see billing-contacts memory>` |
+| Client C / Matter A | `<see billing-contacts memory>` | `<see billing-contacts memory>`, `<see billing-contacts memory>` |
+| Client K (any matter) | `<see billing-contacts memory>` | *(none — user's confirmed policy is AP-only)* |
+| Client B / Matter D | `<see billing-contacts memory>` | *(none)* |
 
 **Do NOT** waste effort updating `invoice.bill_to` or
 `options.notification.to` to "fix" recipient lists — neither field
@@ -277,8 +277,8 @@ manually"** — the Send dialog only auto-populates the primary:
 
 | Invoice # | Client / Matter | Hours | Total | Primary (auto) | Add manually | Timesheet link | Status |
 |-----------|-----------------|-------|-------|---------------|--------------|----------------|--------|
-| INV-…-NNN | Client B / Matter D | 4.5 | $X,XXX.XX | `<redacted-contact>` | — | `dropbox.com/…` | draft ✓ |
-| INV-…-NNN | Client C / Matter A | 59.5 | $X,XXX.XX | `<redacted-contact>` | `<redacted-contact>`, `<redacted-contact>` | `dropbox.com/…` | draft ✓ |
+| INV-…-NNN | Client B / Matter D | 4.5 | $X,XXX.XX | `<see billing-contacts memory>` | — | `dropbox.com/…` | draft ✓ |
+| INV-…-NNN | Client C / Matter A | 59.5 | $X,XXX.XX | `<see billing-contacts memory>` | `<see billing-contacts memory>`, `<see billing-contacts memory>` | `dropbox.com/…` | draft ✓ |
 
 Include an explicit line: **"Totals reconciled: ✓ N/N invoices match CSV
 timesheet totals."** If any didn't reconcile, list them separately with
