@@ -2779,6 +2779,40 @@ if MCP_AVAILABLE:
     _TIMESHEET_LINKS_START = '<!-- timesheet-links-start -->'
     _TIMESHEET_LINKS_END = '<!-- timesheet-links-end -->'
 
+    def _strip_unmarked_timesheet_block(footer: str) -> str:
+        """Remove a legacy, marker-less "Timesheet Documentation" block.
+
+        A new invoice copies its footer from the most recent invoice for the
+        same client, so it arrives carrying THAT invoice's timesheet link
+        with no markers around it. Prepending a fresh block would leave two,
+        one pointing at the previous month's timesheet, which is worse than
+        having none because the wrong CSV still looks official. Seen on
+        INV-20261025-293, which inherited INV-20261005-288's link.
+
+        Matches the heading paragraph plus the <ul> of links after it, the
+        shape every inherited footer uses. Leaves the marker-delimited block
+        and everything else (bank routing, thank-you line) untouched.
+        """
+        import re as _re
+        if not footer or 'Timesheet Documentation' not in footer:
+            return footer
+        pattern = _re.compile(
+            r'(?:<p>\s*)?<strong>\s*Timesheet Documentation\s*</strong>(?:\s*</p>)?'
+            r'\s*<ul>.*?</ul>\s*(?:<br\s*/?>)?',
+            _re.IGNORECASE | _re.DOTALL,
+        )
+        cleaned = footer
+        while True:
+            m = pattern.search(cleaned)
+            if not m:
+                break
+            if cleaned[:m.start()].rstrip().endswith(_TIMESHEET_LINKS_START):
+                break
+            cleaned = cleaned[:m.start()] + cleaned[m.end():]
+        while cleaned.startswith('<br/>') or cleaned.startswith('<br />'):
+            cleaned = cleaned.split('>', 1)[1]
+        return cleaned.lstrip()
+
     @mcp.tool()
     def generate_invoice_footer_with_share_links(
         invoice_number: str,
@@ -2885,6 +2919,15 @@ if MCP_AVAILABLE:
         else:
             # Prepend so links appear above any bank-routing block already
             # in the footer.
+            #
+            # Strip any unmarked "Timesheet Documentation" block first. A new
+            # invoice copies its footer from the most recent invoice for the
+            # same client, so it arrives carrying THAT invoice's timesheet
+            # link with no markers around it. Prepending ours then leaves two
+            # blocks, one pointing at the previous month's timesheet — which
+            # is worse than having none, because the wrong CSV looks official.
+            # Seen on INV-20261025-293, which inherited INV-20261005-288's link.
+            existing_footer = _strip_unmarked_timesheet_block(existing_footer)
             sep = '' if not existing_footer else '<br/>'
             new_footer = block + sep + existing_footer
 

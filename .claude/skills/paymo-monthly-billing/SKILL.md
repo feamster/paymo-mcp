@@ -290,8 +290,34 @@ Idempotent — safe to re-run. The tool mints (or reuses) a Dropbox share
 URL and inserts it between marker comments, preserving any bank-routing
 block already in the footer.
 
+**The inherited-footer trap.** `create_paymo_invoice` copies the footer
+from the most recent invoice for the same client, so a new invoice arrives
+already carrying **the previous invoice's timesheet link**, with no markers
+around it. The splice only replaces what sits between its own markers, so
+the result is two "Timesheet Documentation" blocks — one of them linking
+last month's CSV. That is worse than having no link at all, because the
+wrong timesheet still looks official. Hit on INV-20261025-293, which
+inherited INV-20261005-288's link.
+
+**Fixed 2026-10-25:** the tool now strips any marker-less
+"Timesheet Documentation" block before prepending, leaving the bank-routing
+and thank-you text alone. **Verify anyway** — read the footer back and
+assert exactly one block and exactly one link, carrying *this* invoice's
+number:
+
+```python
+f = c._request('GET', f'invoices/{inv_id}')['invoices'][0]['footer'] or ''
+assert f.count('Timesheet Documentation') == 1
+assert this_invoice_number in f and prior_invoice_number not in f
+```
+
+If a stale block survives, rewrite the whole footer with
+`update_paymo_invoice(invoice_number=..., footer=...)` rather than trying
+to patch around it, and keep the bank block in what you write.
+
 Verify the returned `links` dict maps every path to a `https://…dropbox…`
-URL (not a `file://` or local path — the memory `feedback_invoice_footer_format`
+URL, that it contains exactly one entry per timesheet you passed, and that
+no other timesheet URL survives anywhere in the footer (not a `file://` or local path — the memory `feedback_invoice_footer_format`
 exists specifically because local paths went out on invoices once).
 
 ### 8. Present the summary table
