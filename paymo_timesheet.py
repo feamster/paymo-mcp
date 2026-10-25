@@ -739,13 +739,20 @@ class PaymoClient:
         latest_date = None
 
         for entry in entries:
+            # Accumulate the SAME 2-decimal figure that each row prints, so the
+            # header total equals the sum of the visible Duration column. Summing
+            # exact seconds instead makes the header disagree with the rows a
+            # client gets by adding the column up, and no invoice quantity can
+            # then match both (seen on INV-20261025-293: header 91.28, rows 91.29).
+            entry_hours = 0.0
             if entry.get('duration'):
-                total_hours += entry['duration'] / 3600
+                entry_hours = entry['duration'] / 3600
             elif entry.get('start_time') and entry.get('end_time'):
                 start = dateparser.parse(entry.get('start_time', ''))
                 end = dateparser.parse(entry.get('end_time', ''))
                 if start and end:
-                    total_hours += (end - start).total_seconds() / 3600
+                    entry_hours = (end - start).total_seconds() / 3600
+            total_hours += round(entry_hours, 2)
 
             entry_date_str = entry.get('date') or (entry.get('start_time', '')[:10] if entry.get('start_time') else '')
             if entry_date_str:

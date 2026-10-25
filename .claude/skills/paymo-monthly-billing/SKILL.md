@@ -155,20 +155,47 @@ files in `~/Dropbox/Invoices/` before picking a name).
 
 **5b. Triple-check totals — DO NOT SKIP.** The single most costly
 billing bug is a mismatch between what the invoice charges and what the
-attached CSV documents. Reconcile from three sides:
+attached CSV documents. They must agree **exactly**, to the cent.
+
+**The rounding rule: bill the sum of the per-row hours the CSV prints.**
+Each timesheet row shows its duration rounded to 2 decimals, so the figure
+a client gets by adding up the Duration column is the sum of those rounded
+values — not the sum of exact seconds. Those differ: on
+INV-20261025-293, exact seconds gave 91.2833 h while the 58 printed rows
+summed to 91.29 h, a $6.50 spread at $650/hr. Bill the printed-row total.
+
+Two traps this creates:
+
+- `create_paymo_invoice` sets the line-item quantity by rounding the exact
+  total, which can land either side of the row sum. **Check it and correct
+  it** with a PUT to the invoice item:
+  ```python
+  c._request('PUT', f'invoiceitems/{item_id}', json={'quantity': 91.29})
+  ```
+  Paymo stores at most 4 decimals on `quantity`, so a quantity engineered
+  to hit an exact cent total will be truncated — match the row sum instead.
+- `export_invoice_formatted` used to compute the header `Total Hours` from
+  exact seconds while printing rounded rows, so the header disagreed with
+  its own rows and no quantity could satisfy both. **Fixed 2026-10-25:** it
+  now accumulates `round(entry_hours, 2)` per entry. If you see a header
+  that differs from the summed column, that regression is back.
+
+Reconcile from three sides:
 
 1. **CSV header total.** The first non-empty lines of the CSV include a
    `Total Due` cell. Parse it.
 2. **Sum of CSV rows.** Sum every row's `Duration` (decimal hours or
    `HH:MM`), multiply by the project rate, add any Expenses line from the
-   footer.
+   footer. This is the authoritative hours figure — the invoice quantity
+   must equal it.
 3. **Paymo authoritative total.** Call
    `paymo.get_paymo_invoice_financials(invoice_number="<INV-...>")` and
    read `total`, `fees`, `expenses`.
 
-All three must agree to the cent (allow ≤ $0.01 rounding). Any deviation
-is a hard stop — surface it to the user with the three numbers side by
-side and pause. Common causes: an entry with a non-standard rate, an
+All three must agree **to the cent, exactly** — and so must the sum of
+the printed Duration column, which is the fourth check and the one a
+client can run by hand. Any deviation is a hard stop: surface the numbers
+side by side and fix the line-item quantity rather than proceeding. Common causes: an entry with a non-standard rate, an
 unbilled expense that slipped into the invoice, a `mark_billed` race that
 double-counted an entry. Do not silently proceed with `strict=False`.
 
