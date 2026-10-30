@@ -353,6 +353,47 @@ class PaymoClient:
         response = self._request('PUT', f'invoices/{invoice_id}', json=kwargs)
         return response.get('invoices', [response])[0] if 'invoices' in response else response
 
+    def add_invoice_items(self, invoice_id: int, new_items: List[Dict]) -> Dict:
+        """Append line items to an existing invoice, keeping the current ones.
+
+        Paymo has no endpoint for a single invoice item. A PUT with `items`
+        REPLACES the whole list: any existing item whose id is left out is
+        deleted. So send every current id unchanged, then the new items.
+        Returns the invoice with `invoiceitems` included.
+        """
+        current = self._request(
+            'GET', f'invoices/{invoice_id}?include=invoiceitems'
+        ).get('invoices', [{}])[0]
+        existing = current.get('invoiceitems') or []
+        next_seq = max((it.get('seq') or 0) for it in existing) + 1 if existing else 1
+        items = [{'id': it['id']} for it in existing]
+        for i, it in enumerate(new_items):
+            items.append({'seq': next_seq + i, **it})
+        self._request('PUT', f'invoices/{invoice_id}', json={'items': items})
+        return self._request(
+            'GET', f'invoices/{invoice_id}?include=invoiceitems'
+        ).get('invoices', [{}])[0]
+
+    def sync_linked_projects_amount(self, invoice_id: int) -> Optional[float]:
+        """Set options.linked_projects[].amount to the invoice's stored total.
+
+        The web UI Project column renders linked_projects, including its
+        amount, so it goes stale whenever line items change. Only touches
+        single-project invoices; returns the total written, or None.
+        """
+        inv = self.get_invoice(invoice_id)
+        opts = dict(inv.get('options') or {})
+        linked = opts.get('linked_projects') or []
+        project_id = inv.get('project_id') or (
+            linked[0].get('project_id') if len(linked) == 1 else None
+        )
+        if not project_id:
+            return None
+        total = round(float(inv.get('total') or 0), 2)
+        opts['linked_projects'] = [{'amount': total, 'project_id': int(project_id)}]
+        self.update_invoice(invoice_id, options=opts)
+        return total
+
     def get_invoice_financials(self, invoice_id: int) -> Dict[str, Any]:
         """Split an invoice into fees vs expenses by reading its line items.
 
@@ -2974,7 +3015,10 @@ if MCP_AVAILABLE:
           - ONE line item per invoice, titled with the project name
             (matches the account's existing template — see e.g. any prior
             Keystone invoice)
-          - Line item quantity = total hours; price_unit = project rate
+          - Line item quantity = total hours; price_unit = project rate.
+            The amount always equals minute-level hours × rate to the cent;
+            when Paymo's 4-decimal quantity can't express that, the line is
+            1 × amount with "H hrs M min @ $rate/hr" in its description.
           - Line item description auto-renders the per-task breakdown in
             Paymo's HTML style:
               Total Hours: <span style="color: #777777"><em>H hrs M min</em></span>
@@ -3119,6 +3163,25 @@ if MCP_AVAILABLE:
                 return f"{h} hrs"
             return f"{h} hrs {m} min"
 
+        def _line_pricing(hours: float) -> Dict[str, Any]:
+            """Price a line at the exact minute-level amount.
+
+            The invoice must equal the time actually logged (hours × rate to
+            the cent). Paymo keeps only 4 decimals of quantity, so hours that
+            aren't a multiple of 3 minutes can't be stated exactly: 10 h 5 min
+            is 10.0833 × $600 = $6,049.98, and rounding to 10.08 h bills
+            $6,048 instead of $6,050. When quantity can't carry the exact
+            amount, bill the line as 1 × amount and put the hours and rate in
+            the description instead.
+            """
+            amount = round(hours * rate, 2)
+            qty = round(hours, 4)
+            if round(qty * rate, 2) == amount:
+                return {'quantity': qty, 'price_unit': rate, 'amount': amount,
+                        'lump_sum': False}
+            return {'quantity': 1, 'price_unit': amount, 'amount': amount,
+                    'lump_sum': True}
+
         # ---- resolve template header fields ----
         template_src_id = None
         if (title is None or bill_to is None or company_info is None
@@ -3171,7 +3234,9 @@ if MCP_AVAILABLE:
                 task_agg.append({
                     'task_id': tid,
                     'name': task_names.get(tid, f"Task {tid}"),
-                    'hours': round(sum(_hours(e) for e in es), 2),
+                    # Unrounded: rounding here under-billed odd-minute totals.
+                    # _line_pricing rounds the amount once.
+                    'hours': sum(_hours(e) for e in es),
                     'entries': es,
                 })
 
@@ -3184,7 +3249,7 @@ if MCP_AVAILABLE:
                         'entries': t['entries'],
                     })
             else:  # matter mode
-                total = round(sum(t['hours'] for t in task_agg), 2)
+                total = sum(t['hours'] for t in task_agg)
                 lines = [
                     f'Total Hours: <span style="color: #777777"><em>{_fmt_hm(total)}</em></span>',
                     '',
@@ -3201,7 +3266,7 @@ if MCP_AVAILABLE:
                     'entries': [e for t in task_agg for e in t['entries']],
                 })
         elif group_by == "single":
-            hours = round(sum(_hours(e) for e in entries), 2)
+            hours = sum(_hours(e) for e in entries)
             groups.append({
                 'title': f"Professional services ({start_date} to {end_date})",
                 'hours': hours,
@@ -3221,18 +3286,28 @@ if MCP_AVAILABLE:
         # the source project.
         items_payload: List[Dict[str, Any]] = []
         for i, g in enumerate(groups, start=1):
+            g['pricing'] = _line_pricing(g['hours'])
             item_obj: Dict[str, Any] = {
                 'item': g['title'],
-                'price_unit': rate,
-                'quantity': g['hours'],
+                'price_unit': g['pricing']['price_unit'],
+                'quantity': g['pricing']['quantity'],
                 'seq': i,
             }
-            if g.get('description'):
-                item_obj['description'] = g['description']
+            description = g.get('description')
+            if g['pricing']['lump_sum']:
+                rate_line = f"{_fmt_hm(g['hours'])} @ ${rate:,.2f}/hr"
+                if description and description.startswith('Total Hours: '):
+                    # Matter mode: put the rate on the existing hours line.
+                    first, _, rest = description.partition('\n')
+                    description = f"{first} @ ${rate:,.2f}/hr\n{rest}"
+                else:
+                    description = rate_line + (f"\n{description}" if description else '')
+            if description:
+                item_obj['description'] = description
             items_payload.append(item_obj)
 
-        total_hours = round(sum(g['hours'] for g in groups), 2)
-        total_amount = round(sum(g['hours'] * rate for g in groups), 2)
+        total_hours = round(sum(g['hours'] for g in groups), 4)
+        total_amount = round(sum(g['pricing']['amount'] for g in groups), 2)
 
         # DRY RUN: return the planned payload and stop.
         if dry_run:
@@ -3256,9 +3331,10 @@ if MCP_AVAILABLE:
                 'line_items': [
                     {
                         'title': g['title'],
-                        'hours': g['hours'],
+                        'hours': round(g['hours'], 4),
                         'price': rate,
-                        'subtotal': round(g['hours'] * rate, 2),
+                        'subtotal': g['pricing']['amount'],
+                        'lump_sum': g['pricing']['lump_sum'],
                         'entry_ids': [e.get('id') for e in g['entries']],
                     }
                     for g in groups
@@ -3354,9 +3430,10 @@ if MCP_AVAILABLE:
                         pass
             line_items_out.append({
                 'title': g['title'],
-                'hours': g['hours'],
+                'hours': round(g['hours'], 4),
                 'price': rate,
-                'subtotal': round(g['hours'] * rate, 2),
+                'subtotal': g['pricing']['amount'],
+                'lump_sum': g['pricing']['lump_sum'],
                 'invoice_item_id': item_id,
                 'entry_ids': entry_ids,
             })
@@ -4282,6 +4359,130 @@ if MCP_AVAILABLE:
             return f"Successfully deleted expense {expense_id}"
         except Exception as e:
             return f"Failed to delete expense: {e}"
+
+    @mcp.tool()
+    def add_paymo_expense_to_invoice(
+        invoice_number: str,
+        expense_ids: List[int],
+        description: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Add one or more existing expenses to an invoice as line items.
+
+        For each expense: appends a line (item = expense name, 1 × amount,
+        no tax, `expense_id` set) without touching the invoice's existing
+        lines, links the expense to that line via `invoice_item_id` so
+        Paymo shows it as invoiced, and re-syncs options.linked_projects so
+        the web UI Project column shows the new total.
+
+        Refuses an expense that is already linked to an invoice line, and
+        refuses paid or void invoices.
+
+        Args:
+            invoice_number: e.g. 'INV-20261030-294'
+            expense_ids: Paymo expense ids to add
+            description: Optional line description; defaults to the
+                expense's notes. Applies to every expense passed.
+        """
+        expense_ids = [int(x) for x in expense_ids]
+        if not expense_ids:
+            raise ValueError("expense_ids is empty")
+
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        client = PaymoClient(api_key)
+        invoice = client.find_invoice_by_number(invoice_number)
+        if not invoice:
+            raise ValueError(f"Invoice not found: {invoice_number}")
+        if invoice.get('status') in ('paid', 'void'):
+            raise ValueError(
+                f"{invoice_number} is {invoice.get('status')}; not adding expenses to it"
+            )
+        invoice_id = int(invoice['id'])
+        total_before = round(float(invoice.get('total') or 0), 2)
+
+        expenses = []
+        for eid in expense_ids:
+            exp = client._request('GET', f'expenses/{eid}').get('expenses', [{}])[0]
+            if not exp.get('id'):
+                raise ValueError(f"Expense not found: {eid}")
+            if exp.get('invoice_item_id'):
+                raise ValueError(
+                    f"Expense {eid} is already on invoice line "
+                    f"{exp['invoice_item_id']}"
+                )
+            if exp.get('client_id') and invoice.get('client_id') \
+                    and exp['client_id'] != invoice['client_id']:
+                raise ValueError(
+                    f"Expense {eid} belongs to client {exp['client_id']}, "
+                    f"invoice to client {invoice['client_id']}"
+                )
+            expenses.append(exp)
+
+        new_items = []
+        for exp in expenses:
+            item = {
+                'item': exp.get('name') or f"Expense {exp['id']}",
+                'price_unit': round(float(exp.get('amount') or 0), 2),
+                'quantity': 1,
+                'expense_id': int(exp['id']),
+                'apply_tax': False,
+            }
+            notes = description if description is not None else exp.get('notes')
+            if notes:
+                import html as _html
+                item['description'] = _html.unescape(notes)
+            new_items.append(item)
+
+        refreshed = client.add_invoice_items(invoice_id, new_items)
+        items_by_expense = {
+            it.get('expense_id'): it for it in (refreshed.get('invoiceitems') or [])
+            if it.get('expense_id')
+        }
+
+        added = []
+        for exp in expenses:
+            item = items_by_expense.get(int(exp['id']))
+            if not item:
+                raise RuntimeError(
+                    f"Paymo did not create a line for expense {exp['id']} on "
+                    f"{invoice_number}; check the invoice before retrying"
+                )
+            linked = client._request(
+                'GET', f"expenses/{exp['id']}"
+            ).get('expenses', [{}])[0]
+            # Paymo usually links the expense itself when the line carries
+            # expense_id; set it explicitly when it didn't.
+            if linked.get('invoice_item_id') != item['id']:
+                linked = client.update_expense(
+                    int(exp['id']), invoice_item_id=int(item['id'])
+                )
+            added.append({
+                'expense_id': exp['id'],
+                'name': exp.get('name'),
+                'amount': item.get('price_unit'),
+                'invoice_item_id': item['id'],
+                'expense_invoiced': linked.get('invoiced'),
+            })
+
+        try:
+            client.sync_linked_projects_amount(invoice_id)
+        except Exception:
+            # Cosmetic (Project column amount); don't fail the add on it.
+            pass
+
+        final = client.get_invoice(invoice_id)
+        return {
+            'invoice_number': invoice_number,
+            'invoice_id': invoice_id,
+            'status': final.get('status'),
+            'total_before': total_before,
+            'total_after': round(float(final.get('total') or 0), 2),
+            'expenses_added': added,
+        }
 
     @mcp.tool()
     def audit_paymo_expenses(
