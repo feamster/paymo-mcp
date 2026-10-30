@@ -3015,10 +3015,9 @@ if MCP_AVAILABLE:
           - ONE line item per invoice, titled with the project name
             (matches the account's existing template — see e.g. any prior
             Keystone invoice)
-          - Line item quantity = total hours; price_unit = project rate.
-            The amount always equals minute-level hours × rate to the cent;
-            when Paymo's 4-decimal quantity can't express that, the line is
-            1 × amount with "H hrs M min @ $rate/hr" in its description.
+          - Line item quantity = sum of each entry's hours rounded to 2
+            decimals (the same figures the timesheet CSV rows print and the
+            ExpertConnect portal bills), so invoice = timesheet = portal.
           - Line item description auto-renders the per-task breakdown in
             Paymo's HTML style:
               Total Hours: <span style="color: #777777"><em>H hrs M min</em></span>
@@ -3163,24 +3162,13 @@ if MCP_AVAILABLE:
                 return f"{h} hrs"
             return f"{h} hrs {m} min"
 
-        def _line_pricing(hours: float) -> Dict[str, Any]:
-            """Price a line at the exact minute-level amount.
-
-            The invoice must equal the time actually logged (hours × rate to
-            the cent). Paymo keeps only 4 decimals of quantity, so hours that
-            aren't a multiple of 3 minutes can't be stated exactly: 10 h 5 min
-            is 10.0833 × $600 = $6,049.98, and rounding to 10.08 h bills
-            $6,048 instead of $6,050. When quantity can't carry the exact
-            amount, bill the line as 1 × amount and put the hours and rate in
-            the description instead.
+        def _row_hours(e) -> float:
+            """One entry's hours rounded to 2 decimals, as the timesheet CSV
+            prints it and as the ExpertConnect portal bills it. Summing these
+            (not exact seconds) keeps the invoice equal to the timesheet rows;
+            exact totals drift a few dollars from what the rows add up to.
             """
-            amount = round(hours * rate, 2)
-            qty = round(hours, 4)
-            if round(qty * rate, 2) == amount:
-                return {'quantity': qty, 'price_unit': rate, 'amount': amount,
-                        'lump_sum': False}
-            return {'quantity': 1, 'price_unit': amount, 'amount': amount,
-                    'lump_sum': True}
+            return round(_hours(e), 2)
 
         # ---- resolve template header fields ----
         template_src_id = None
@@ -3234,9 +3222,7 @@ if MCP_AVAILABLE:
                 task_agg.append({
                     'task_id': tid,
                     'name': task_names.get(tid, f"Task {tid}"),
-                    # Unrounded: rounding here under-billed odd-minute totals.
-                    # _line_pricing rounds the amount once.
-                    'hours': sum(_hours(e) for e in es),
+                    'hours': round(sum(_row_hours(e) for e in es), 2),
                     'entries': es,
                 })
 
@@ -3249,7 +3235,7 @@ if MCP_AVAILABLE:
                         'entries': t['entries'],
                     })
             else:  # matter mode
-                total = sum(t['hours'] for t in task_agg)
+                total = round(sum(t['hours'] for t in task_agg), 2)
                 lines = [
                     f'Total Hours: <span style="color: #777777"><em>{_fmt_hm(total)}</em></span>',
                     '',
@@ -3266,7 +3252,7 @@ if MCP_AVAILABLE:
                     'entries': [e for t in task_agg for e in t['entries']],
                 })
         elif group_by == "single":
-            hours = sum(_hours(e) for e in entries)
+            hours = round(sum(_row_hours(e) for e in entries), 2)
             groups.append({
                 'title': f"Professional services ({start_date} to {end_date})",
                 'hours': hours,
@@ -3286,28 +3272,18 @@ if MCP_AVAILABLE:
         # the source project.
         items_payload: List[Dict[str, Any]] = []
         for i, g in enumerate(groups, start=1):
-            g['pricing'] = _line_pricing(g['hours'])
             item_obj: Dict[str, Any] = {
                 'item': g['title'],
-                'price_unit': g['pricing']['price_unit'],
-                'quantity': g['pricing']['quantity'],
+                'price_unit': rate,
+                'quantity': g['hours'],
                 'seq': i,
             }
-            description = g.get('description')
-            if g['pricing']['lump_sum']:
-                rate_line = f"{_fmt_hm(g['hours'])} @ ${rate:,.2f}/hr"
-                if description and description.startswith('Total Hours: '):
-                    # Matter mode: put the rate on the existing hours line.
-                    first, _, rest = description.partition('\n')
-                    description = f"{first} @ ${rate:,.2f}/hr\n{rest}"
-                else:
-                    description = rate_line + (f"\n{description}" if description else '')
-            if description:
-                item_obj['description'] = description
+            if g.get('description'):
+                item_obj['description'] = g['description']
             items_payload.append(item_obj)
 
-        total_hours = round(sum(g['hours'] for g in groups), 4)
-        total_amount = round(sum(g['pricing']['amount'] for g in groups), 2)
+        total_hours = round(sum(g['hours'] for g in groups), 2)
+        total_amount = round(sum(g['hours'] * rate for g in groups), 2)
 
         # DRY RUN: return the planned payload and stop.
         if dry_run:
@@ -3331,10 +3307,9 @@ if MCP_AVAILABLE:
                 'line_items': [
                     {
                         'title': g['title'],
-                        'hours': round(g['hours'], 4),
+                        'hours': g['hours'],
                         'price': rate,
-                        'subtotal': g['pricing']['amount'],
-                        'lump_sum': g['pricing']['lump_sum'],
+                        'subtotal': round(g['hours'] * rate, 2),
                         'entry_ids': [e.get('id') for e in g['entries']],
                     }
                     for g in groups
@@ -3430,10 +3405,9 @@ if MCP_AVAILABLE:
                         pass
             line_items_out.append({
                 'title': g['title'],
-                'hours': round(g['hours'], 4),
+                'hours': g['hours'],
                 'price': rate,
-                'subtotal': g['pricing']['amount'],
-                'lump_sum': g['pricing']['lump_sum'],
+                'subtotal': round(g['hours'] * rate, 2),
                 'invoice_item_id': item_id,
                 'entry_ids': entry_ids,
             })
