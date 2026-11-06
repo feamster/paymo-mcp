@@ -2338,7 +2338,7 @@ if MCP_AVAILABLE:
         start_time: str = None,
         end_time: str = None,
         added_manually: bool = True,
-        timezone: str = "America/Chicago"
+        timezone: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create a single time entry in Paymo.
@@ -2355,7 +2355,7 @@ if MCP_AVAILABLE:
             start_time: Start time in HH:MM 24-hour format (use with end_time)
             end_time: End time in HH:MM 24-hour format (use with start_time)
             added_manually: Entry type - True for manual/form entry (default), False for timer-tracked
-            timezone: IANA timezone for start/end times (default: America/Chicago)
+            timezone: IANA timezone for start/end times (default: "timezone" in config.json)
         """
         # Convert parameters to proper types (MCP may pass strings)
         task_id = int(task_id)
@@ -2366,6 +2366,7 @@ if MCP_AVAILABLE:
         api_key = config.get('api_key')
         if not api_key:
             raise ValueError("API key not configured")
+        timezone = timezone or config.get('timezone', 'America/Chicago')
 
         client = PaymoClient(api_key)
 

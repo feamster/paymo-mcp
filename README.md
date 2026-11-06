@@ -68,6 +68,8 @@ Configuration is split between non-sensitive settings and auth:
 }
 ```
 
+`timezone` is the default for start/end-time entries created with `create_paymo_entry`.
+
 **`~/.mcp-auth/paymo/auth.json`** (sensitive, sync separately):
 ```json
 {
