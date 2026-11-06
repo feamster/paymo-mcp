@@ -141,9 +141,22 @@ class PaymoClient:
         response = self._request('GET', endpoint)
         return response.get('tasks', [])
 
-    def get_entries(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict]:
-        """List time entries within date range"""
+    def get_current_user(self) -> Dict:
+        """Return the Paymo user that owns the API key (cached per client)."""
+        if not hasattr(self, '_current_user'):
+            response = self._request('GET', 'me')
+            self._current_user = response.get('users', [{}])[0]
+        return self._current_user
+
+    def get_entries(self, start_date: Optional[str] = None, end_date: Optional[str] = None,
+                    user_id: Optional[int] = None) -> List[Dict]:
+        """List time entries within date range, optionally for a single user.
+
+        user_id=None returns every entry the API key can see (needed for
+        project-wide invoicing); pass a user ID to restrict to that user.
+        """
         endpoint = "entries"
+        conditions = []
 
         if start_date and end_date:
             # Convert dates to ISO format
@@ -153,10 +166,28 @@ class PaymoClient:
             start_iso = start_dt.strftime('%Y-%m-%dT00:00:00Z')
             end_iso = end_dt.strftime('%Y-%m-%dT23:59:59Z')
 
-            endpoint += f'?where=time_interval in ("{start_iso}","{end_iso}")'
+            conditions.append(f'time_interval in ("{start_iso}","{end_iso}")')
+
+        if user_id is not None:
+            conditions.append(f'user_id={int(user_id)}')
+
+        if conditions:
+            endpoint += '?where=' + ' and '.join(conditions)
 
         response = self._request('GET', endpoint)
-        return response.get('entries', [])
+        entries = response.get('entries', [])
+        if user_id is not None:
+            # Defensive: never return another user's entries if the API ignores the filter
+            entries = [e for e in entries if e.get('user_id') == int(user_id)]
+        return entries
+
+    def resolve_user_id(self, user_id: Optional[int] = None, all_users: bool = False) -> Optional[int]:
+        """Default to the API key's own user unless all_users or an explicit user_id is given."""
+        if all_users:
+            return None
+        if user_id is not None:
+            return int(user_id)
+        return self.get_current_user().get('id')
 
     def create_entry(self, task_id: int, **kwargs) -> Dict:
         """
