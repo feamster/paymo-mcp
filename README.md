@@ -240,16 +240,18 @@ entries:
     description: "Expert witness report preparation"
 ```
 
-#### `list_paymo_entries(start_date, end_date, project_id=None, billed=None)`
-List time entries with optional filters.
+#### `list_paymo_entries(start_date, end_date, project_id=None, billed=None, user_id=None, all_users=False)`
+List time entries with optional filters. **Defaults to the API key's own user**: on multi-user Paymo accounts the API returns every entry the key can see, including colleagues'.
 
 **Args:**
 - `start_date` (str): Start date (YYYY-MM-DD)
 - `end_date` (str): End date (YYYY-MM-DD)
 - `project_id` (int, optional): Filter by project
 - `billed` (bool, optional): Filter by billing status (True=billed, False=unbilled, None=all)
+- `user_id` (int, optional): List another user's entries instead
+- `all_users` (bool): Return every visible entry (previous behaviour)
 
-**Returns:** List of entries with task names, durations, descriptions, and billing status.
+**Returns:** List of entries with user ID, task names, durations, descriptions, and billing status.
 
 ### Invoice Management
 

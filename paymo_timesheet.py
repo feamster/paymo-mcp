@@ -3853,19 +3853,24 @@ if MCP_AVAILABLE:
         start_date: str,
         end_date: str,
         project_id: Optional[int] = None,
-        billed: Optional[bool] = None
+        billed: Optional[bool] = None,
+        user_id: Optional[int] = None,
+        all_users: bool = False
     ) -> List[Dict[str, Any]]:
         """
-        List time entries with optional filters
+        List time entries with optional filters. By default returns ONLY the
+        entries of the user who owns the API key.
 
         Args:
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
             project_id: Optional project filter
             billed: Optional filter - True for billed, False for unbilled, None for all
+            user_id: Optional Paymo user ID to list instead of the API key's own user
+            all_users: If True, return every entry the API key can see (all users)
 
         Returns:
-            List of time entries with task names, durations, descriptions
+            List of time entries with user IDs, task names, durations, descriptions
         """
         config = load_config()
         api_key = config.get('api_key')
@@ -3874,8 +3879,9 @@ if MCP_AVAILABLE:
 
         client = PaymoClient(api_key)
 
-        # Get entries
-        entries = client.get_entries(start_date, end_date)
+        # Get entries (own user by default)
+        entries = client.get_entries(start_date, end_date,
+                                     user_id=client.resolve_user_id(user_id, all_users))
 
         # Filter by project if specified
         if project_id is not None:
@@ -3935,6 +3941,7 @@ if MCP_AVAILABLE:
 
             result.append({
                 'id': entry.get('id'),
+                'user_id': entry.get('user_id'),
                 'project_id': entry.get('project_id'),
                 'task_id': task_id,
                 'task_name': task_name,
@@ -4054,15 +4061,20 @@ if MCP_AVAILABLE:
     @mcp.tool()
     def get_unbilled_summary(
         start_date: str = None,
-        end_date: str = None
+        end_date: str = None,
+        user_id: Optional[int] = None,
+        all_users: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Get unbilled hours and revenue summary by project.
         Efficient query that returns only aggregated data, not individual entries.
+        By default counts ONLY the API key's own user's entries.
 
         Args:
             start_date: Optional start date (YYYY-MM-DD), defaults to 60 days ago
             end_date: Optional end date (YYYY-MM-DD), defaults to tomorrow (to catch today's entries in all timezones)
+            user_id: Optional Paymo user ID to summarise instead of the API key's own user
+            all_users: If True, include every user's entries the API key can see
 
         Returns:
             List of projects with unbilled summary: project name, client, rate, unbilled hours, unbilled amount
@@ -4087,7 +4099,8 @@ if MCP_AVAILABLE:
         projects = client.get_projects()
 
         # Get all unbilled entries (without fetching task names - more efficient)
-        all_entries = client.get_entries(start_date, end_date)
+        all_entries = client.get_entries(start_date, end_date,
+                                         user_id=client.resolve_user_id(user_id, all_users))
         unbilled_entries = [e for e in all_entries if not e.get('billed', False)]
 
         # Aggregate by project
