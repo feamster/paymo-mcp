@@ -39,9 +39,12 @@ except ImportError:
 class PaymoClient:
     """Wrapper for Paymo API calls"""
 
-    def __init__(self, api_key: str, base_url: str = "https://app.paymoapp.com/api/"):
+    def __init__(self, api_key: str, base_url: str = "https://app.paymoapp.com/api/",
+                 timezone: Optional[str] = None):
         self.api_key = api_key
         self.base_url = base_url.rstrip('/') + '/'
+        self.timezone = timezone  # default: "timezone" in config.json
+        self._tz = None
         self.session = requests.Session()
         self.session.auth = (api_key, 'X')
         self.session.headers.update({
@@ -148,6 +151,20 @@ class PaymoClient:
             self._current_user = response.get('users', [{}])[0]
         return self._current_user
 
+    def _local_tz(self):
+        if self._tz is None:
+            name = self.timezone or load_config().get('timezone', 'America/Chicago')
+            self._tz = pytz.timezone(name)
+        return self._tz
+
+    def _entry_local_date(self, entry: Dict) -> Optional[str]:
+        """Local YYYY-MM-DD of an entry. Block entries (start/end time) carry no `date`."""
+        if entry.get('date'):
+            return entry['date']
+        if entry.get('start_time'):
+            return dateparser.parse(entry['start_time']).astimezone(self._local_tz()).strftime('%Y-%m-%d')
+        return None
+
     def get_entries(self, start_date: Optional[str] = None, end_date: Optional[str] = None,
                     user_id: Optional[int] = None) -> List[Dict]:
         """List time entries within date range, optionally for a single user.
@@ -159,12 +176,15 @@ class PaymoClient:
         conditions = []
 
         if start_date and end_date:
-            # Convert dates to ISO format
-            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            # time_interval is matched in UTC, so query the local-timezone day
+            # window converted to UTC; a plain UTC day drops/adds edge entries.
+            tz = self._local_tz()
+            start_utc = tz.localize(datetime.strptime(start_date, '%Y-%m-%d')).astimezone(pytz.UTC)
+            next_day = tz.localize(datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1))
+            end_utc = next_day.astimezone(pytz.UTC) - timedelta(seconds=1)
 
-            start_iso = start_dt.strftime('%Y-%m-%dT00:00:00Z')
-            end_iso = end_dt.strftime('%Y-%m-%dT23:59:59Z')
+            start_iso = start_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
+            end_iso = end_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
 
             conditions.append(f'time_interval in ("{start_iso}","{end_iso}")')
 
@@ -176,6 +196,11 @@ class PaymoClient:
 
         response = self._request('GET', endpoint)
         entries = response.get('entries', [])
+        if start_date and end_date:
+            # Entries from other timezones can still land in the window; trim on local date
+            entries = [e for e in entries
+                       if self._entry_local_date(e) is None
+                       or start_date <= self._entry_local_date(e) <= end_date]
         if user_id is not None:
             # Defensive: never return another user's entries if the API ignores the filter
             entries = [e for e in entries if e.get('user_id') == int(user_id)]

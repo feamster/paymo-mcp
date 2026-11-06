@@ -73,7 +73,7 @@ Configuration is split between non-sensitive settings and auth:
 }
 ```
 
-`timezone` is the default for start/end-time entries created with `create_paymo_entry`, and is used for "today". `defaults` (optional) supplies the task, hours per day and description for `add_paymo_time`.
+`timezone` is the default for start/end-time entries created with `create_paymo_entry`, is used for "today", and defines the day boundaries when listing entries by date range. `defaults` (optional) supplies the task, hours per day and description for `add_paymo_time`.
 
 **`~/.mcp-auth/paymo/auth.json`** (sensitive, sync separately):
 ```json
@@ -597,6 +597,10 @@ pip install fastmcp
 ### "Rate limit exceeded"
 
 The script will automatically wait and retry. If you see this frequently, reduce batch operation sizes.
+
+### Entries missing at the start or end of a date range
+
+Paymo matches `time_interval` in UTC, so in timezones far from UTC (e.g. New Zealand, UTC+12/+13) a plain UTC day window drops entries on the first or last day and pulls in entries from neighbouring days. `get_entries` queries the `timezone` from `config.json` converted to UTC (local midnight to 23:59:59) and trims on each entry's local date. This assumes everyone whose entries you list shares that timezone: Paymo stores date-only entries at midday in each user's own profile timezone, so a colleague in a very different timezone can fall outside the window.
 
 ### Empty invoice exports
 
