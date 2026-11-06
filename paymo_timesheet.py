@@ -3849,6 +3849,20 @@ if MCP_AVAILABLE:
         }
 
     @mcp.tool()
+    def get_paymo_current_user() -> Dict[str, Any]:
+        """
+        Return the Paymo user that owns the configured API key (id and name).
+        Entry-listing tools default to this user.
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        user = PaymoClient(api_key).get_current_user()
+        return {'id': user.get('id'), 'name': user.get('name')}
+
+    @mcp.tool()
     def list_paymo_entries(
         start_date: str,
         end_date: str,

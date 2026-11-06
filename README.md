@@ -253,6 +253,9 @@ List time entries with optional filters. **Defaults to the API key's own user**:
 
 **Returns:** List of entries with user ID, task names, durations, descriptions, and billing status.
 
+#### `get_paymo_current_user()`
+Return the Paymo user (id, name) that owns the API key.
+
 ### Invoice Management
 
 #### `list_paymo_invoices(client_id=None, status=None)`
