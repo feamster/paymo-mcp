@@ -273,6 +273,9 @@ add_paymo_time(start_date="2026-07-06", end_date="2026-07-10", task_id=32862251,
 add_paymo_time(..., dry_run=False)                    # create after review
 ```
 
+#### `get_paymo_time_status(start_date=None, end_date=None, target_hours_per_day=None, task_id=None)`
+Hours logged vs. target per working day for your own user (defaults to this week, Monday to today). Returns totals, shortfall, `days_under_target` and `last_logged_date`, which is useful for finding missing timesheet days.
+
 ### Invoice Management
 
 #### `list_paymo_invoices(client_id=None, status=None)`

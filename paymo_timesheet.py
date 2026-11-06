@@ -4008,6 +4008,73 @@ if MCP_AVAILABLE:
         return summary
 
     @mcp.tool()
+    def get_paymo_time_status(
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        target_hours_per_day: Optional[float] = None,
+        task_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Hours logged vs. target for the API key's own user, per working day.
+        Defaults to this week (Monday to today). Use a longer range to find
+        missing timesheet days. Days after today are not counted as expected.
+
+        Args:
+            start_date: First date (YYYY-MM-DD), defaults to this Monday
+            end_date: Last date (YYYY-MM-DD), defaults to today
+            target_hours_per_day: Target hours, defaults to defaults.hours in config.json (else 8)
+            task_id: Optional - only count entries on this task
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        today = local_today(config)
+        today_dt = datetime.strptime(today, '%Y-%m-%d').date()
+        start_date = start_date or (today_dt - timedelta(days=today_dt.weekday())).strftime('%Y-%m-%d')
+        end_date = end_date or today
+        target = float(target_hours_per_day) if target_hours_per_day is not None else entry_defaults(config)['hours']
+
+        client = PaymoClient(api_key)
+        entries = client.get_entries(start_date, end_date, user_id=client.resolve_user_id())
+        if task_id is not None:
+            entries = [e for e in entries if e.get('task_id') == int(task_id)]
+
+        logged: Dict[str, float] = {}
+        for e in entries:
+            day = e.get('date') or (e.get('start_time') or '')[:10]
+            logged[day] = logged.get(day, 0) + (e.get('duration') or 0) / 3600
+
+        expected_days = working_days(start_date, min(end_date, today))
+        days = []
+        for day in sorted(set(expected_days) | set(logged)):
+            hours = round(logged.get(day, 0), 2)
+            is_working_day = day in expected_days
+            days.append({
+                'date': day,
+                'weekday': datetime.strptime(day, '%Y-%m-%d').strftime('%a'),
+                'logged_hours': hours,
+                'shortfall_hours': round(max(target - hours, 0), 2) if is_working_day else 0,
+            })
+
+        total_logged = round(sum(logged.values()), 2)
+        expected = round(len(expected_days) * target, 2)
+        return {
+            'date_range': f"{start_date} to {end_date}",
+            'today': today,
+            'today_logged_hours': round(logged.get(today, 0), 2),
+            'target_hours_per_day': target,
+            'total_logged_hours': total_logged,
+            'expected_hours': expected,
+            'shortfall_hours': round(max(expected - total_logged, 0), 2),
+            'days_under_target': [d['date'] for d in days if d['shortfall_hours'] > 0],
+            'last_logged_date': max(logged) if logged else None,
+            'task_id': task_id,
+            'days': days,
+        }
+
+    @mcp.tool()
     def list_paymo_entries(
         start_date: str,
         end_date: str,
