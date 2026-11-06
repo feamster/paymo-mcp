@@ -59,6 +59,11 @@ Configuration is split between non-sensitive settings and auth:
 ```json
 {
   "timezone": "America/Chicago",
+  "defaults": {
+    "task_id": null,
+    "hours": 8,
+    "description": "Development"
+  },
   "projects": {
     "Client Matter Name": {
       "project_id": 12345,
@@ -68,7 +73,7 @@ Configuration is split between non-sensitive settings and auth:
 }
 ```
 
-`timezone` is the default for start/end-time entries created with `create_paymo_entry`.
+`timezone` is the default for start/end-time entries created with `create_paymo_entry`, and is used for "today". `defaults` (optional) supplies the task, hours per day and description for `add_paymo_time`.
 
 **`~/.mcp-auth/paymo/auth.json`** (sensitive, sync separately):
 ```json
@@ -257,6 +262,16 @@ List time entries with optional filters. **Defaults to the API key's own user**:
 
 #### `get_paymo_current_user()`
 Return the Paymo user (id, name) that owns the API key.
+
+#### `add_paymo_time(start_date, end_date=None, task_id=None, hours_per_day=None, description=None, exclude_dates=None, exclude_start=None, exclude_end=None, only_skip_same_task=False, dry_run=True)`
+Bulk-add one entry per working day (Mon–Fri) for your own user. **Defaults to a dry run**: nothing is created until called again with `dry_run=False`. Days that already have any of your time logged are skipped, so days are never double-booked and re-running is safe (`only_skip_same_task=True` only skips days with an entry on the same task). Unset arguments fall back to `defaults` in `config.json`.
+
+**Example:**
+```python
+add_paymo_time(start_date="2026-07-06", end_date="2026-07-10", task_id=32862251,
+               exclude_dates=["2026-07-10"])         # preview
+add_paymo_time(..., dry_run=False)                    # create after review
+```
 
 ### Invoice Management
 

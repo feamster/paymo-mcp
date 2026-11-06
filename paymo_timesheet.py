@@ -1681,6 +1681,35 @@ def _read_json_file(path: Path) -> Optional[Dict]:
         return None
 
 
+def working_days(start_date: str, end_date: str, exclude: Optional[List[str]] = None) -> List[str]:
+    """YYYY-MM-DD dates from start to end (inclusive), skipping weekends and excluded dates."""
+    excluded = set(exclude or [])
+    current = datetime.strptime(start_date, '%Y-%m-%d').date()
+    end = datetime.strptime(end_date, '%Y-%m-%d').date()
+    days = []
+    while current <= end:
+        day = current.strftime('%Y-%m-%d')
+        if current.weekday() < 5 and day not in excluded:
+            days.append(day)
+        current += timedelta(days=1)
+    return days
+
+
+def entry_defaults(config: Dict) -> Dict:
+    """Time-entry defaults from the "defaults" block of config.json (task_id, hours, description)."""
+    defaults = config.get('defaults') or {}
+    return {
+        'task_id': defaults.get('task_id'),
+        'hours': float(defaults.get('hours', 8)),
+        'description': defaults.get('description', 'Development'),
+    }
+
+
+def local_today(config: Dict) -> str:
+    """Today's date in the configured timezone."""
+    return datetime.now(pytz.timezone(config.get('timezone', 'America/Chicago'))).strftime('%Y-%m-%d')
+
+
 def load_config() -> Dict:
     """Load configuration from ~/.mcp-config/paymo/ and ~/.mcp-auth/paymo/"""
     config_dir = Path(os.environ.get('PAYMO_CONFIG_DIR') or Path.home() / '.mcp-config' / 'paymo')
@@ -3862,6 +3891,121 @@ if MCP_AVAILABLE:
 
         user = PaymoClient(api_key).get_current_user()
         return {'id': user.get('id'), 'name': user.get('name')}
+
+    @mcp.tool()
+    def add_paymo_time(
+        start_date: str,
+        end_date: Optional[str] = None,
+        task_id: Optional[int] = None,
+        hours_per_day: Optional[float] = None,
+        description: Optional[str] = None,
+        exclude_dates: Optional[List[str]] = None,
+        exclude_start: Optional[str] = None,
+        exclude_end: Optional[str] = None,
+        only_skip_same_task: bool = False,
+        dry_run: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Bulk-add one time entry per working day (Mon-Fri) for the API key's own user.
+
+        Days that already have any of the user's time logged are skipped, so days are
+        never double-booked and re-running is safe. DEFAULTS TO A DRY RUN: nothing is
+        created until called again with dry_run=False, which should only happen after
+        the user approves the preview.
+
+        Args:
+            start_date: First date (YYYY-MM-DD, inclusive)
+            end_date: Last date (YYYY-MM-DD, inclusive), defaults to today
+            task_id: Task to log against, defaults to defaults.task_id in config.json
+            hours_per_day: Hours per day, defaults to defaults.hours in config.json (else 8)
+            description: Entry description, defaults to defaults.description (else "Development")
+            exclude_dates: Dates to skip, e.g. leave or public holidays (YYYY-MM-DD)
+            exclude_start: Start of a date range to skip (use with exclude_end)
+            exclude_end: End of a date range to skip (use with exclude_start)
+            only_skip_same_task: If True, only skip days that already have an entry on
+                this task (adds to days with time on other tasks)
+            dry_run: True (default) previews only; False creates the entries
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+        defaults = entry_defaults(config)
+
+        task_id = task_id if task_id is not None else defaults['task_id']
+        if not task_id:
+            raise ValueError("task_id is required (or set defaults.task_id in ~/.mcp-config/paymo/config.json)")
+        task_id = int(task_id)
+        hours = float(hours_per_day) if hours_per_day is not None else defaults['hours']
+        if not 0 < hours <= 24:
+            raise ValueError("hours_per_day must be between 0 and 24")
+        description = description or defaults['description']
+        end_date = end_date or local_today(config)
+
+        excluded = list(exclude_dates or [])
+        if exclude_start and exclude_end:
+            current = datetime.strptime(exclude_start, '%Y-%m-%d').date()
+            last = datetime.strptime(exclude_end, '%Y-%m-%d').date()
+            while current <= last:
+                excluded.append(current.strftime('%Y-%m-%d'))
+                current += timedelta(days=1)
+        elif exclude_start or exclude_end:
+            raise ValueError("exclude_start and exclude_end must be used together")
+
+        client = PaymoClient(api_key)
+        task = client._request('GET', f'tasks/{task_id}').get('tasks', [{}])[0]
+        if not task.get('id'):
+            raise ValueError(f"Task {task_id} not found")
+        user_id = client.resolve_user_id()
+
+        days = working_days(start_date, end_date, excluded)
+        existing = client.get_entries(start_date, end_date, user_id=user_id)
+        logged_by_day: Dict[str, float] = {}
+        days_with_task = set()
+        for e in existing:
+            day = e.get('date') or (e.get('start_time') or '')[:10]
+            logged_by_day[day] = logged_by_day.get(day, 0) + (e.get('duration') or 0) / 3600
+            if e.get('task_id') == task_id:
+                days_with_task.add(day)
+
+        skip = days_with_task if only_skip_same_task else {d for d, h in logged_by_day.items() if h > 0}
+        to_create = [d for d in days if d not in skip]
+        summary = {
+            'task_id': task_id,
+            'task_name': task.get('name'),
+            'project_id': task.get('project_id'),
+            'date_range': f"{start_date} to {end_date}",
+            'hours_per_day': hours,
+            'description': description,
+            'excluded_dates': sorted(set(excluded)),
+            'working_days': len(days),
+            'skipped_existing': sorted(set(days) & skip),
+            'to_create': [
+                {'date': d, 'hours': hours, 'already_logged_hours': round(logged_by_day.get(d, 0), 2)}
+                for d in to_create
+            ],
+            'total_new_hours': round(len(to_create) * hours, 2),
+        }
+
+        if dry_run:
+            summary['dry_run'] = True
+            summary['note'] = "Preview only - nothing created. Call again with dry_run=False after the user approves."
+            return summary
+
+        created, failed = [], []
+        for day in to_create:
+            try:
+                response = client.create_entry(task_id, date=day, duration=int(round(hours * 3600)),
+                                               description=description, user_id=user_id)
+                entry = response.get('entries', [{}])[0] if isinstance(response, dict) else {}
+                created.append({'date': day, 'entry_id': entry.get('id')})
+            except Exception as e:
+                failed.append({'date': day, 'error': str(e)[:200]})
+
+        summary['dry_run'] = False
+        summary['created'] = created
+        summary['failed'] = failed
+        return summary
 
     @mcp.tool()
     def list_paymo_entries(
