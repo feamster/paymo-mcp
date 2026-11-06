@@ -75,6 +75,11 @@ Configuration is split between non-sensitive settings and auth:
 
 `timezone` is the default for start/end-time entries created with `create_paymo_entry`, is used for "today", and defines the day boundaries when listing entries by date range. `defaults` (optional) supplies the task, hours per day and description for `add_paymo_time`.
 
+To start from a template, copy [config.example.json](config.example.json) and replace the placeholder IDs and timezone with your own:
+```bash
+mkdir -p ~/.mcp-config/paymo && cp config.example.json ~/.mcp-config/paymo/config.json
+```
+
 **`~/.mcp-auth/paymo/auth.json`** (sensitive, sync separately):
 ```json
 {
