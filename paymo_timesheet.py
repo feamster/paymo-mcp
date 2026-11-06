@@ -39,9 +39,12 @@ except ImportError:
 class PaymoClient:
     """Wrapper for Paymo API calls"""
 
-    def __init__(self, api_key: str, base_url: str = "https://app.paymoapp.com/api/"):
+    def __init__(self, api_key: str, base_url: str = "https://app.paymoapp.com/api/",
+                 timezone: Optional[str] = None):
         self.api_key = api_key
         self.base_url = base_url.rstrip('/') + '/'
+        self.timezone = timezone  # default: "timezone" in config.json
+        self._tz = None
         self.session = requests.Session()
         self.session.auth = (api_key, 'X')
         self.session.headers.update({
@@ -141,22 +144,75 @@ class PaymoClient:
         response = self._request('GET', endpoint)
         return response.get('tasks', [])
 
-    def get_entries(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict]:
-        """List time entries within date range"""
+    def get_current_user(self) -> Dict:
+        """Return the Paymo user that owns the API key (cached per client)."""
+        if not hasattr(self, '_current_user'):
+            response = self._request('GET', 'me')
+            self._current_user = response.get('users', [{}])[0]
+        return self._current_user
+
+    def _local_tz(self):
+        if self._tz is None:
+            name = self.timezone or load_config().get('timezone', 'America/Chicago')
+            self._tz = pytz.timezone(name)
+        return self._tz
+
+    def _entry_local_date(self, entry: Dict) -> Optional[str]:
+        """Local YYYY-MM-DD of an entry. Block entries (start/end time) carry no `date`."""
+        if entry.get('date'):
+            return entry['date']
+        if entry.get('start_time'):
+            return dateparser.parse(entry['start_time']).astimezone(self._local_tz()).strftime('%Y-%m-%d')
+        return None
+
+    def get_entries(self, start_date: Optional[str] = None, end_date: Optional[str] = None,
+                    user_id: Optional[int] = None) -> List[Dict]:
+        """List time entries within date range, optionally for a single user.
+
+        user_id=None returns every entry the API key can see (needed for
+        project-wide invoicing); pass a user ID to restrict to that user.
+        """
         endpoint = "entries"
+        conditions = []
 
         if start_date and end_date:
-            # Convert dates to ISO format
-            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            # time_interval is matched in UTC, so query the local-timezone day
+            # window converted to UTC; a plain UTC day drops/adds edge entries.
+            tz = self._local_tz()
+            start_utc = tz.localize(datetime.strptime(start_date, '%Y-%m-%d')).astimezone(pytz.UTC)
+            next_day = tz.localize(datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1))
+            end_utc = next_day.astimezone(pytz.UTC) - timedelta(seconds=1)
 
-            start_iso = start_dt.strftime('%Y-%m-%dT00:00:00Z')
-            end_iso = end_dt.strftime('%Y-%m-%dT23:59:59Z')
+            start_iso = start_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
+            end_iso = end_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-            endpoint += f'?where=time_interval in ("{start_iso}","{end_iso}")'
+            conditions.append(f'time_interval in ("{start_iso}","{end_iso}")')
+
+        if user_id is not None:
+            conditions.append(f'user_id={int(user_id)}')
+
+        if conditions:
+            endpoint += '?where=' + ' and '.join(conditions)
 
         response = self._request('GET', endpoint)
-        return response.get('entries', [])
+        entries = response.get('entries', [])
+        if start_date and end_date:
+            # Entries from other timezones can still land in the window; trim on local date
+            entries = [e for e in entries
+                       if self._entry_local_date(e) is None
+                       or start_date <= self._entry_local_date(e) <= end_date]
+        if user_id is not None:
+            # Defensive: never return another user's entries if the API ignores the filter
+            entries = [e for e in entries if e.get('user_id') == int(user_id)]
+        return entries
+
+    def resolve_user_id(self, user_id: Optional[int] = None, all_users: bool = False) -> Optional[int]:
+        """Default to the API key's own user unless all_users or an explicit user_id is given."""
+        if all_users:
+            return None
+        if user_id is not None:
+            return int(user_id)
+        return self.get_current_user().get('id')
 
     def create_entry(self, task_id: int, **kwargs) -> Dict:
         """
@@ -1650,6 +1706,35 @@ def _read_json_file(path: Path) -> Optional[Dict]:
         return None
 
 
+def working_days(start_date: str, end_date: str, exclude: Optional[List[str]] = None) -> List[str]:
+    """YYYY-MM-DD dates from start to end (inclusive), skipping weekends and excluded dates."""
+    excluded = set(exclude or [])
+    current = datetime.strptime(start_date, '%Y-%m-%d').date()
+    end = datetime.strptime(end_date, '%Y-%m-%d').date()
+    days = []
+    while current <= end:
+        day = current.strftime('%Y-%m-%d')
+        if current.weekday() < 5 and day not in excluded:
+            days.append(day)
+        current += timedelta(days=1)
+    return days
+
+
+def entry_defaults(config: Dict) -> Dict:
+    """Time-entry defaults from the "defaults" block of config.json (task_id, hours, description)."""
+    defaults = config.get('defaults') or {}
+    return {
+        'task_id': defaults.get('task_id'),
+        'hours': float(defaults.get('hours', 8)),
+        'description': defaults.get('description', 'Development'),
+    }
+
+
+def local_today(config: Dict) -> str:
+    """Today's date in the configured timezone."""
+    return datetime.now(pytz.timezone(config.get('timezone', 'America/Chicago'))).strftime('%Y-%m-%d')
+
+
 def load_config() -> Dict:
     """Load configuration from ~/.mcp-config/paymo/ and ~/.mcp-auth/paymo/"""
     config_dir = Path(os.environ.get('PAYMO_CONFIG_DIR') or Path.home() / '.mcp-config' / 'paymo')
@@ -2307,7 +2392,7 @@ if MCP_AVAILABLE:
         start_time: str = None,
         end_time: str = None,
         added_manually: bool = True,
-        timezone: str = "America/Chicago"
+        timezone: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create a single time entry in Paymo.
@@ -2324,7 +2409,7 @@ if MCP_AVAILABLE:
             start_time: Start time in HH:MM 24-hour format (use with end_time)
             end_time: End time in HH:MM 24-hour format (use with start_time)
             added_manually: Entry type - True for manual/form entry (default), False for timer-tracked
-            timezone: IANA timezone for start/end times (default: America/Chicago)
+            timezone: IANA timezone for start/end times (default: "timezone" in config.json)
         """
         # Convert parameters to proper types (MCP may pass strings)
         task_id = int(task_id)
@@ -2335,6 +2420,7 @@ if MCP_AVAILABLE:
         api_key = config.get('api_key')
         if not api_key:
             raise ValueError("API key not configured")
+        timezone = timezone or config.get('timezone', 'America/Chicago')
 
         client = PaymoClient(api_key)
 
@@ -3818,23 +3904,224 @@ if MCP_AVAILABLE:
         }
 
     @mcp.tool()
+    def get_paymo_current_user() -> Dict[str, Any]:
+        """
+        Return the Paymo user that owns the configured API key (id and name).
+        Entry-listing tools default to this user.
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        user = PaymoClient(api_key).get_current_user()
+        return {'id': user.get('id'), 'name': user.get('name')}
+
+    @mcp.tool()
+    def add_paymo_time(
+        start_date: str,
+        end_date: Optional[str] = None,
+        task_id: Optional[int] = None,
+        hours_per_day: Optional[float] = None,
+        description: Optional[str] = None,
+        exclude_dates: Optional[List[str]] = None,
+        exclude_start: Optional[str] = None,
+        exclude_end: Optional[str] = None,
+        only_skip_same_task: bool = False,
+        dry_run: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Bulk-add one time entry per working day (Mon-Fri) for the API key's own user.
+
+        Days that already have any of the user's time logged are skipped, so days are
+        never double-booked and re-running is safe. DEFAULTS TO A DRY RUN: nothing is
+        created until called again with dry_run=False, which should only happen after
+        the user approves the preview.
+
+        Args:
+            start_date: First date (YYYY-MM-DD, inclusive)
+            end_date: Last date (YYYY-MM-DD, inclusive), defaults to today
+            task_id: Task to log against, defaults to defaults.task_id in config.json
+            hours_per_day: Hours per day, defaults to defaults.hours in config.json (else 8)
+            description: Entry description, defaults to defaults.description (else "Development")
+            exclude_dates: Dates to skip, e.g. leave or public holidays (YYYY-MM-DD)
+            exclude_start: Start of a date range to skip (use with exclude_end)
+            exclude_end: End of a date range to skip (use with exclude_start)
+            only_skip_same_task: If True, only skip days that already have an entry on
+                this task (adds to days with time on other tasks)
+            dry_run: True (default) previews only; False creates the entries
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+        defaults = entry_defaults(config)
+
+        task_id = task_id if task_id is not None else defaults['task_id']
+        if not task_id:
+            raise ValueError("task_id is required (or set defaults.task_id in ~/.mcp-config/paymo/config.json)")
+        task_id = int(task_id)
+        hours = float(hours_per_day) if hours_per_day is not None else defaults['hours']
+        if not 0 < hours <= 24:
+            raise ValueError("hours_per_day must be between 0 and 24")
+        description = description or defaults['description']
+        end_date = end_date or local_today(config)
+
+        excluded = list(exclude_dates or [])
+        if exclude_start and exclude_end:
+            current = datetime.strptime(exclude_start, '%Y-%m-%d').date()
+            last = datetime.strptime(exclude_end, '%Y-%m-%d').date()
+            while current <= last:
+                excluded.append(current.strftime('%Y-%m-%d'))
+                current += timedelta(days=1)
+        elif exclude_start or exclude_end:
+            raise ValueError("exclude_start and exclude_end must be used together")
+
+        client = PaymoClient(api_key)
+        task = client._request('GET', f'tasks/{task_id}').get('tasks', [{}])[0]
+        if not task.get('id'):
+            raise ValueError(f"Task {task_id} not found")
+        user_id = client.resolve_user_id()
+
+        days = working_days(start_date, end_date, excluded)
+        existing = client.get_entries(start_date, end_date, user_id=user_id)
+        logged_by_day: Dict[str, float] = {}
+        days_with_task = set()
+        for e in existing:
+            day = e.get('date') or (e.get('start_time') or '')[:10]
+            logged_by_day[day] = logged_by_day.get(day, 0) + (e.get('duration') or 0) / 3600
+            if e.get('task_id') == task_id:
+                days_with_task.add(day)
+
+        skip = days_with_task if only_skip_same_task else {d for d, h in logged_by_day.items() if h > 0}
+        to_create = [d for d in days if d not in skip]
+        summary = {
+            'task_id': task_id,
+            'task_name': task.get('name'),
+            'project_id': task.get('project_id'),
+            'date_range': f"{start_date} to {end_date}",
+            'hours_per_day': hours,
+            'description': description,
+            'excluded_dates': sorted(set(excluded)),
+            'working_days': len(days),
+            'skipped_existing': sorted(set(days) & skip),
+            'to_create': [
+                {'date': d, 'hours': hours, 'already_logged_hours': round(logged_by_day.get(d, 0), 2)}
+                for d in to_create
+            ],
+            'total_new_hours': round(len(to_create) * hours, 2),
+        }
+
+        if dry_run:
+            summary['dry_run'] = True
+            summary['note'] = "Preview only - nothing created. Call again with dry_run=False after the user approves."
+            return summary
+
+        created, failed = [], []
+        for day in to_create:
+            try:
+                response = client.create_entry(task_id, date=day, duration=int(round(hours * 3600)),
+                                               description=description, user_id=user_id)
+                entry = response.get('entries', [{}])[0] if isinstance(response, dict) else {}
+                created.append({'date': day, 'entry_id': entry.get('id')})
+            except Exception as e:
+                failed.append({'date': day, 'error': str(e)[:200]})
+
+        summary['dry_run'] = False
+        summary['created'] = created
+        summary['failed'] = failed
+        return summary
+
+    @mcp.tool()
+    def get_paymo_time_status(
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        target_hours_per_day: Optional[float] = None,
+        task_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Hours logged vs. target for the API key's own user, per working day.
+        Defaults to this week (Monday to today). Use a longer range to find
+        missing timesheet days. Days after today are not counted as expected.
+
+        Args:
+            start_date: First date (YYYY-MM-DD), defaults to this Monday
+            end_date: Last date (YYYY-MM-DD), defaults to today
+            target_hours_per_day: Target hours, defaults to defaults.hours in config.json (else 8)
+            task_id: Optional - only count entries on this task
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured")
+
+        today = local_today(config)
+        today_dt = datetime.strptime(today, '%Y-%m-%d').date()
+        start_date = start_date or (today_dt - timedelta(days=today_dt.weekday())).strftime('%Y-%m-%d')
+        end_date = end_date or today
+        target = float(target_hours_per_day) if target_hours_per_day is not None else entry_defaults(config)['hours']
+
+        client = PaymoClient(api_key)
+        entries = client.get_entries(start_date, end_date, user_id=client.resolve_user_id())
+        if task_id is not None:
+            entries = [e for e in entries if e.get('task_id') == int(task_id)]
+
+        logged: Dict[str, float] = {}
+        for e in entries:
+            day = e.get('date') or (e.get('start_time') or '')[:10]
+            logged[day] = logged.get(day, 0) + (e.get('duration') or 0) / 3600
+
+        expected_days = working_days(start_date, min(end_date, today))
+        days = []
+        for day in sorted(set(expected_days) | set(logged)):
+            hours = round(logged.get(day, 0), 2)
+            is_working_day = day in expected_days
+            days.append({
+                'date': day,
+                'weekday': datetime.strptime(day, '%Y-%m-%d').strftime('%a'),
+                'logged_hours': hours,
+                'shortfall_hours': round(max(target - hours, 0), 2) if is_working_day else 0,
+            })
+
+        total_logged = round(sum(logged.values()), 2)
+        expected = round(len(expected_days) * target, 2)
+        return {
+            'date_range': f"{start_date} to {end_date}",
+            'today': today,
+            'today_logged_hours': round(logged.get(today, 0), 2),
+            'target_hours_per_day': target,
+            'total_logged_hours': total_logged,
+            'expected_hours': expected,
+            'shortfall_hours': round(max(expected - total_logged, 0), 2),
+            'days_under_target': [d['date'] for d in days if d['shortfall_hours'] > 0],
+            'last_logged_date': max(logged) if logged else None,
+            'task_id': task_id,
+            'days': days,
+        }
+
+    @mcp.tool()
     def list_paymo_entries(
         start_date: str,
         end_date: str,
         project_id: Optional[int] = None,
-        billed: Optional[bool] = None
+        billed: Optional[bool] = None,
+        user_id: Optional[int] = None,
+        all_users: bool = False
     ) -> List[Dict[str, Any]]:
         """
-        List time entries with optional filters
+        List time entries with optional filters. By default returns ONLY the
+        entries of the user who owns the API key.
 
         Args:
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
             project_id: Optional project filter
             billed: Optional filter - True for billed, False for unbilled, None for all
+            user_id: Optional Paymo user ID to list instead of the API key's own user
+            all_users: If True, return every entry the API key can see (all users)
 
         Returns:
-            List of time entries with task names, durations, descriptions
+            List of time entries with user IDs, task names, durations, descriptions
         """
         config = load_config()
         api_key = config.get('api_key')
@@ -3843,8 +4130,9 @@ if MCP_AVAILABLE:
 
         client = PaymoClient(api_key)
 
-        # Get entries
-        entries = client.get_entries(start_date, end_date)
+        # Get entries (own user by default)
+        entries = client.get_entries(start_date, end_date,
+                                     user_id=client.resolve_user_id(user_id, all_users))
 
         # Filter by project if specified
         if project_id is not None:
@@ -3904,6 +4192,7 @@ if MCP_AVAILABLE:
 
             result.append({
                 'id': entry.get('id'),
+                'user_id': entry.get('user_id'),
                 'project_id': entry.get('project_id'),
                 'task_id': task_id,
                 'task_name': task_name,
@@ -4023,15 +4312,20 @@ if MCP_AVAILABLE:
     @mcp.tool()
     def get_unbilled_summary(
         start_date: str = None,
-        end_date: str = None
+        end_date: str = None,
+        user_id: Optional[int] = None,
+        all_users: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Get unbilled hours and revenue summary by project.
         Efficient query that returns only aggregated data, not individual entries.
+        By default counts ONLY the API key's own user's entries.
 
         Args:
             start_date: Optional start date (YYYY-MM-DD), defaults to 60 days ago
             end_date: Optional end date (YYYY-MM-DD), defaults to tomorrow (to catch today's entries in all timezones)
+            user_id: Optional Paymo user ID to summarise instead of the API key's own user
+            all_users: If True, include every user's entries the API key can see
 
         Returns:
             List of projects with unbilled summary: project name, client, rate, unbilled hours, unbilled amount
@@ -4056,7 +4350,8 @@ if MCP_AVAILABLE:
         projects = client.get_projects()
 
         # Get all unbilled entries (without fetching task names - more efficient)
-        all_entries = client.get_entries(start_date, end_date)
+        all_entries = client.get_entries(start_date, end_date,
+                                         user_id=client.resolve_user_id(user_id, all_users))
         unbilled_entries = [e for e in all_entries if not e.get('billed', False)]
 
         # Aggregate by project

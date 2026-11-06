@@ -59,6 +59,11 @@ Configuration is split between non-sensitive settings and auth:
 ```json
 {
   "timezone": "America/Chicago",
+  "defaults": {
+    "task_id": null,
+    "hours": 8,
+    "description": "Development"
+  },
   "projects": {
     "Client Matter Name": {
       "project_id": 12345,
@@ -66,6 +71,13 @@ Configuration is split between non-sensitive settings and auth:
     }
   }
 }
+```
+
+`timezone` is the default for start/end-time entries created with `create_paymo_entry`, is used for "today", and defines the day boundaries when listing entries by date range. `defaults` (optional) supplies the task, hours per day and description for `add_paymo_time`.
+
+To start from a template, copy [config.example.json](config.example.json) and replace the placeholder IDs and timezone with your own:
+```bash
+mkdir -p ~/.mcp-config/paymo && cp config.example.json ~/.mcp-config/paymo/config.json
 ```
 
 **`~/.mcp-auth/paymo/auth.json`** (sensitive, sync separately):
@@ -240,16 +252,34 @@ entries:
     description: "Expert witness report preparation"
 ```
 
-#### `list_paymo_entries(start_date, end_date, project_id=None, billed=None)`
-List time entries with optional filters.
+#### `list_paymo_entries(start_date, end_date, project_id=None, billed=None, user_id=None, all_users=False)`
+List time entries with optional filters. **Defaults to the API key's own user**: on multi-user Paymo accounts the API returns every entry the key can see, including colleagues'.
 
 **Args:**
 - `start_date` (str): Start date (YYYY-MM-DD)
 - `end_date` (str): End date (YYYY-MM-DD)
 - `project_id` (int, optional): Filter by project
 - `billed` (bool, optional): Filter by billing status (True=billed, False=unbilled, None=all)
+- `user_id` (int, optional): List another user's entries instead
+- `all_users` (bool): Return every visible entry (previous behaviour)
 
-**Returns:** List of entries with task names, durations, descriptions, and billing status.
+**Returns:** List of entries with user ID, task names, durations, descriptions, and billing status.
+
+#### `get_paymo_current_user()`
+Return the Paymo user (id, name) that owns the API key.
+
+#### `add_paymo_time(start_date, end_date=None, task_id=None, hours_per_day=None, description=None, exclude_dates=None, exclude_start=None, exclude_end=None, only_skip_same_task=False, dry_run=True)`
+Bulk-add one entry per working day (Mon–Fri) for your own user. **Defaults to a dry run**: nothing is created until called again with `dry_run=False`. Days that already have any of your time logged are skipped, so days are never double-booked and re-running is safe (`only_skip_same_task=True` only skips days with an entry on the same task). Unset arguments fall back to `defaults` in `config.json`.
+
+**Example:**
+```python
+add_paymo_time(start_date="2026-07-06", end_date="2026-07-10", task_id=32862251,
+               exclude_dates=["2026-07-10"])         # preview
+add_paymo_time(..., dry_run=False)                    # create after review
+```
+
+#### `get_paymo_time_status(start_date=None, end_date=None, target_hours_per_day=None, task_id=None)`
+Hours logged vs. target per working day for your own user (defaults to this week, Monday to today). Returns totals, shortfall, `days_under_target` and `last_logged_date`, which is useful for finding missing timesheet days.
 
 ### Invoice Management
 
@@ -572,6 +602,10 @@ pip install fastmcp
 ### "Rate limit exceeded"
 
 The script will automatically wait and retry. If you see this frequently, reduce batch operation sizes.
+
+### Entries missing at the start or end of a date range
+
+Paymo matches `time_interval` in UTC, so in timezones far from UTC (e.g. New Zealand, UTC+12/+13) a plain UTC day window drops entries on the first or last day and pulls in entries from neighbouring days. `get_entries` queries the `timezone` from `config.json` converted to UTC (local midnight to 23:59:59) and trims on each entry's local date. This assumes everyone whose entries you list shares that timezone: Paymo stores date-only entries at midday in each user's own profile timezone, so a colleague in a very different timezone can fall outside the window.
 
 ### Empty invoice exports
 

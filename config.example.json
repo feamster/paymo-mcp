@@ -1,0 +1,14 @@
+{
+  "timezone": "Pacific/Auckland",
+  "defaults": {
+    "task_id": 67890,
+    "hours": 8,
+    "description": "Development"
+  },
+  "projects": {
+    "Client Matter Name": {
+      "project_id": 12345,
+      "task_id": 67890
+    }
+  }
+}
