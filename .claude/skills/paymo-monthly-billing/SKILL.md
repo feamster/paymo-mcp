@@ -96,6 +96,8 @@ Capture the returned `invoice.number` (e.g. `INV-YYYYMMDD-NNN`) and
 
 ### 4. Ensure `linked_projects` is set (web UI quirk)
 
+**Fixed 2026-11-11:** Paymo stopped persisting `options.linked_projects` on PUT (it returns 200 but stores `[]`). The field that sticks is a **top-level** `linked_projects` in the PUT body, the same one the web UI's "Link With Projects" dialog writes. The tools now send it. After any project fix, GET the invoice and confirm `options.linked_projects` is non-empty. Don't trust `updated_fields`.
+
 Paymo has *two* project associations on an invoice: top-level `project_id`
 and `options.linked_projects`. The web UI Project column renders from
 `linked_projects`.

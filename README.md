@@ -584,7 +584,9 @@ Paymo invoices have **two** fields for project association:
 1. `project_id` (top-level) — the canonical link; reports and analytics use this.
 2. `options.linked_projects: [{amount, project_id}]` — what the **web UI Project column** actually renders.
 
-If you set only `project_id`, the Project column in the invoices list view is empty and clients see something that looks broken. `create_paymo_invoice` wires both automatically. When patching an invoice built by another tool, use `update_paymo_invoice(invoice_number, project_id=...)` — it sets both.
+If you set only `project_id`, the Project column in the invoices list view is empty and clients see something that looks broken.
+
+**Since November 2026, Paymo ignores `options.linked_projects` on PUT.** It returns 200 but stores `[]`. Send the same list as a **top-level** `linked_projects` field, which is what the web UI's "Link With Projects" dialog writes. `update_paymo_invoice`, `create_paymo_invoice`, and the expense-sync path now send both. `create_paymo_invoice` wires both automatically. When patching an invoice built by another tool, use `update_paymo_invoice(invoice_number, project_id=...)` — it sets both.
 
 ### Dropbox: `DropboxAuthError: Dropbox auth not found`
 

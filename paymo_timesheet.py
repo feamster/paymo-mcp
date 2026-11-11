@@ -391,7 +391,8 @@ class PaymoClient:
             return None
         total = round(float(inv.get('total') or 0), 2)
         opts['linked_projects'] = [{'amount': total, 'project_id': int(project_id)}]
-        self.update_invoice(invoice_id, options=opts)
+        self.update_invoice(invoice_id, options=opts,
+                            linked_projects=opts['linked_projects'])
         return total
 
     def get_invoice_financials(self, invoice_id: int) -> Dict[str, Any]:
@@ -2796,6 +2797,11 @@ if MCP_AVAILABLE:
                 'project_id': int(project_id),
             }]
             payload['options'] = opts
+            # Since 2026-11 Paymo ignores options.linked_projects on PUT
+            # (returns 200, stores []). The top-level linked_projects field
+            # is what the web UI's "Link With Projects" writes, and it
+            # persists.
+            payload['linked_projects'] = opts['linked_projects']
 
         updated = client.update_invoice(invoice['id'], **payload)
         # Trim to the fields callers actually use so we don't dump the
@@ -3369,6 +3375,7 @@ if MCP_AVAILABLE:
                         json={
                             'project_id': int(project_id),
                             'options': cur_opts,
+                            'linked_projects': cur_opts['linked_projects'],
                         },
                     )
             except Exception:
