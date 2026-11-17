@@ -282,7 +282,7 @@ Update fields on an existing Paymo invoice. Pass only the fields you want to cha
 
 **Common uses:**
 - Mark paid after bank reconciliation: `update_paymo_invoice("INV-...", status="paid")`
-- Fix an invoice whose Project column renders empty: `update_paymo_invoice("INV-...", project_id=3482327)`
+- Fix an invoice whose Project column renders empty: `update_paymo_invoice("INV-...", project_id=1234567)`
 
 #### `generate_invoice_footer_with_share_links(invoice_number, timesheet_paths, glimpse_csv_paths=None, heading="Timesheet Documentation", apply=True)`
 Mint Dropbox share URLs for timesheet/CSV files inside `~/Dropbox` and splice a clickable "Timesheet Documentation" block into an invoice's footer. Renders as `<a href>` anchor tags → PDF link annotations in the exported invoice.
@@ -658,3 +658,18 @@ Issues and pull requests welcome! Please ensure:
 ## Acknowledgments
 
 Built with [FastMCP](https://github.com/jlowin/fastmcp) for Model Context Protocol support.
+
+## Contributing: keep client data out of the repo
+
+This repo is public. A pre-commit hook blocks commits whose added lines or
+commit message contain third-party email addresses, real invoice numbers,
+real dollar amounts, or names from a private denylist kept outside the repo.
+Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Use placeholders in docs, tests, and commit messages (`INV-YYYYMMDD-NNN`,
+`$X,XXX.XX`, `Client A`, `Matter B`, `name@example.com`). Set
+`PAYMO_MCP_DENYLIST` to point the hook at your own denylist file.

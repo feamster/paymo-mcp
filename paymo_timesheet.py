@@ -2504,10 +2504,10 @@ if MCP_AVAILABLE:
             CSV content as a string, ready to save + upload to Glimpse.
 
         Examples:
-            export_glimpse_timesheet(project_id=3482327,
+            export_glimpse_timesheet(project_id=1234567,
                 glimpse_project_code="CLIENT-PROJECT-CODE",
                 month="June")
-            export_glimpse_timesheet(project_id=3482327,
+            export_glimpse_timesheet(project_id=1234567,
                 glimpse_project_code="...", month="last")
         """
         import csv
@@ -3053,8 +3053,8 @@ if MCP_AVAILABLE:
             hitting Paymo. Skips create + link entirely when no entries match.
 
         Common shortcuts:
-            create_paymo_invoice(project_id=3482327, month="last", dry_run=True)
-            create_paymo_invoice(project_id=3482327, month="June", dry_run=True)
+            create_paymo_invoice(project_id=1234567, month="last", dry_run=True)
+            create_paymo_invoice(project_id=1234567, month="June", dry_run=True)
 
         Args:
             project_id: Paymo project id to invoice

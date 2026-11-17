@@ -171,7 +171,7 @@ class ExportInvoiceStrictGuardTests(unittest.TestCase):
     guard even when the linked time entries perfectly covered the fees.
     """
 
-    # Two entries totaling 54.3 hours (matches the real INV-TEST-250 case).
+    # Two entries totaling 54.3 hours (regression case INV-TEST-250).
     ENTRIES = [
         {'id': 100, 'invoice_item_id': 500, 'date': '2026-04-15',
          'duration': 30 * 3600, 'project_id': 777},
@@ -205,10 +205,10 @@ class ExportInvoiceStrictGuardTests(unittest.TestCase):
     def test_strict_passes_when_fees_match_despite_expenses(self):
         """Regression test for the INV-TEST-250 case.
 
-        54.30 hrs × $5/hr = $X,XXX.XX covers the invoice's fee line
-        exactly. There's also an expense line ($X,XXX.XX) making the
-        invoice total $X,XXX.XX. The OLD strict guard compared $X,XXX.XX
-        to $X,XXX.XX and errored out. It should now pass.
+        54.30 hrs × $5/hr = $271.50 covers the invoice's fee line
+        exactly. There's also an expense line ($41.35) making the
+        invoice total $312.85. The OLD strict guard compared $312.85
+        to $271.50 and errored out. It should now pass.
         """
         invoice_items = [
             {'id': 500, 'price_unit': 5, 'quantity': 54.30, 'subtotal': 271.50},
@@ -225,18 +225,18 @@ class ExportInvoiceStrictGuardTests(unittest.TestCase):
             patcher.stop()
 
         # Header should report the true split, not the subtraction hack.
-        self.assertIn('Fees,"$X,XXX.XX"', csv_out)
-        self.assertIn('Expenses,"$X,XXX.XX"', csv_out)
-        self.assertIn('Total Due,"$X,XXX.XX"', csv_out)
+        self.assertIn('Fees,$271.50', csv_out)
+        self.assertIn('Expenses,$41.35', csv_out)
+        self.assertIn('Total Due,$312.85', csv_out)
 
     def test_strict_errors_when_linked_entries_dont_cover_fees(self):
         """Regression test for the INV-TEST-233 misdiagnosis.
 
-        The invoice has $X,XXX.XX in fees, but only $X,XXX.XX (70 hrs × $5)
+        The invoice has $511.00 in fees, but only $350.00 (70 hrs × $5)
         of linked time entries. The strict guard MUST reject this rather
-        than silently reporting the $X,XXX.XX gap as expenses.
+        than silently reporting the $161.00 gap as expenses.
         """
-        # Only 70h worth of entries linked, on a $X,XXX.XX fee item.
+        # Only 70h worth of entries linked, on a $511.00 fee item.
         seventy_hour_entries = [
             {'id': 200, 'invoice_item_id': 800, 'date': '2026-02-15',
              'duration': 70 * 3600, 'project_id': 777},
@@ -280,7 +280,7 @@ class ExportInvoiceStrictGuardTests(unittest.TestCase):
         # Must NOT contain the old misleading phrasing.
         self.assertNotIn('Invoice total mismatch', msg)
         # Must surface the true expenses figure so the caller sees it.
-        self.assertIn('$X,XXX.XX', msg)
+        self.assertIn('$73.18', msg)
 
 
 class UpdateInvoiceTests(unittest.TestCase):

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Block commits that add third-party or client data. See scan-sensitive.sh.
+tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+git diff --cached -U0 --no-color --diff-filter=ACMR -- . ':(exclude)uv.lock' \
+  | grep '^+' | grep -v '^+++' > "$tmp"
+# Staged file names count too.
+git diff --cached --name-only --diff-filter=ACMR >> "$tmp"
+exec "$(git rev-parse --show-toplevel)/.githooks/scan-sensitive.sh" "$tmp" "staged changes"

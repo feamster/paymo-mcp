@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Commit messages are public too. See scan-sensitive.sh.
+grep -v '^#' "$1" > "$1.scan"; trap 'rm -f "$1.scan"' EXIT
+"$(git rev-parse --show-toplevel)/.githooks/scan-sensitive.sh" "$1.scan" "commit message"

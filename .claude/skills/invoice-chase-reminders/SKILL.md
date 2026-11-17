@@ -59,11 +59,15 @@ an already-paid invoice looks sloppy; always reconcile first.
 
 Evidence sources, by payer:
 
+The real per-client payment channels and chase routing live in Nick's
+local `client-billing-channels` memory, not in this public repo. The
+letters below (Client C, Matter A, ...) are placeholders that show the shape.
+
 | Payer / client | Payment signal | How to find it |
 |-----------------|-----------------|-----------------|
 | Client D (Matter F, Matter E) | **Melio ACH** | `spark.search_emails(sender_email="service@meliopayments.com", query="<client name>")` — look for `Get paid instantly by X` (initiated) and `Your payment from X` (delivered). Reference the `invoice number` field in the email body. |
 | Client K | **Check by mail** | `spark.search_emails(query="payment received <matter>")` or search for prior "Payment received" threads Nick has written confirming receipt. |
-| Client C / the consulting firm | **ACH** | `spark.search_emails(query="<INV-number>")` — the consulting team typically confirm when payment went out. Monthly chase thread tracks what's cleared. |
+| Client C / the consulting firm | **ACH** | `spark.search_emails(query="<INV-number>")` — the consulting team typically confirms when payment went out. Monthly chase thread tracks what's cleared. |
 | Client B | **Check by mail** | Nick usually tells you directly which invoice was paid; cross-check with recent "paid" markings in Paymo for the client. |
 | Client L | **Wire** | Prior chase thread replies name which specific invoices cleared. |
 
@@ -116,12 +120,13 @@ Call `list_paymo_client_contacts` for the addresses. Paymo is the source of
 truth and the contacts carry `is_main`, `position` and `notes`; never hardcode
 an address here.
 
-What Paymo cannot tell you, and what to apply on top of it:
+What Paymo cannot tell you, and what to apply on top of it (real rules:
+`client-billing-channels` memory):
 
 | Client | Routing rule |
 |--------|--------------|
 | Client K | Chase the engagement managers, not the AP box. The AP address is the Send-dialog destination only; a reminder sent there goes nowhere useful. |
-| Client C (Matter A) | Nick bills through the consulting firm, the consulting firm, who talk to Client C counsel. Chase the consulting firm, not Client C directly. |
+| Client C (Matter A) | Nick bills through a consulting firm, which talks to Client C's counsel. Chase the consulting firm, not Client C directly. |
 | Client D | Several matters share this client with different leads. Pick the contact whose `position`/`notes` match the matter; the Matter E matter has its own litigation address. |
 | Client B | One contact is AP (`is_main`), the other is the attorney. Chase AP, Cc the attorney. |
 
