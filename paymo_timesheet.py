@@ -117,6 +117,12 @@ class PaymoClient:
         response = self._request('GET', endpoint)
         return response.get('clientcontacts', [])
 
+    def create_client_contact(self, client_id: int, email: str, **kwargs) -> Dict:
+        """Create a billing/notification contact on a client."""
+        data = {'client_id': client_id, 'email': email, **kwargs}
+        response = self._request('POST', 'clientcontacts', json=data)
+        return response.get('clientcontacts', [response])[0] if 'clientcontacts' in response else response
+
     def create_client(self, name: str, **kwargs) -> Dict:
         """Create a new client"""
         data = {'name': name, **kwargs}
@@ -1967,6 +1973,63 @@ if MCP_AVAILABLE:
             'is_main': c.get('is_main'),
             'notes': c.get('notes'),
         } for c in contacts]
+
+    @mcp.tool()
+    def create_paymo_client_contact(
+        client_id: int,
+        email: str,
+        name: Optional[str] = None,
+        position: Optional[str] = None,
+        phone: Optional[str] = None,
+        notes: Optional[str] = None,
+        is_main: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Add a billing/notification contact to a Paymo client.
+
+        Contacts on a client are the addresses invoices go to when Paymo's
+        Send dialog populates the recipient list. Set `is_main=True` to flag
+        the primary billing recipient.
+
+        Args:
+            client_id: Paymo client id
+            email: Contact email (required by Paymo for billing use)
+            name: Full name of the contact
+            position: Role/title (e.g. "Billing Coordinator")
+            phone: Phone number
+            notes: Free-form notes stored on the contact
+            is_main: Mark as the client's main contact (default False)
+
+        Returns:
+            Created contact: id, client_id, name, email, position, is_main
+        """
+        config = load_config()
+        api_key = config.get('api_key')
+        if not api_key:
+            raise ValueError("API key not configured in ~/.mcp-auth/paymo/auth.json")
+
+        client = PaymoClient(api_key)
+
+        kwargs: Dict[str, Any] = {'is_main': is_main}
+        if name:
+            kwargs['name'] = name
+        if position:
+            kwargs['position'] = position
+        if phone:
+            kwargs['phone'] = phone
+        if notes:
+            kwargs['notes'] = notes
+
+        c = client.create_client_contact(client_id, email, **kwargs)
+
+        return {
+            'id': c.get('id'),
+            'client_id': c.get('client_id'),
+            'name': c.get('name'),
+            'email': c.get('email'),
+            'position': c.get('position'),
+            'is_main': c.get('is_main'),
+        }
 
     @mcp.tool()
     def create_paymo_client(
